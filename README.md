@@ -1,3 +1,8 @@
+---
+title: AI-Hab API Usage Demo
+pinned: false
+sdk: streamlit
+---
 # AI-Hab API usage Demonstrator
 
 This is a minimal demonstrator streamlit web application that classifies habitats into **UKHab Level 3 categories** using the AI-Hab computer computer vision model. This app serves as an example of integrating the API into an app.
