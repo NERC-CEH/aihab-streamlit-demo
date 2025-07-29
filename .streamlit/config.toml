@@ -1,0 +1,8 @@
+[theme]
+base="light"
+primaryColor="slateBlue"
+baseRadius="full"
+
+
+[server]
+maxUploadSize = 20
