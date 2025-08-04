@@ -1,2 +1,3 @@
 streamlit
 dotenv
+streamlit_js_eval
