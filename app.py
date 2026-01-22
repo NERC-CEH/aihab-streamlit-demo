@@ -4,6 +4,7 @@ import json
 import os
 from dotenv import load_dotenv
 from streamlit_js_eval import get_geolocation
+import threading
 
 # Load environment variables from .env file
 load_dotenv()
@@ -12,31 +13,37 @@ load_dotenv()
 api_key = os.getenv("API_KEY",None)
 base_url = os.getenv("API_URL",None)
 url = f"{base_url}/predict"  # Adjust if upload endpoint is different
+warm_up_url = f"{base_url}/warmup"
 
 headers = {
     "Authorization": f"Key {api_key}",
     "accept": "application/json"
 }
 
+# Warmup function this runs in a separate thread to avoid blocking the main app and to ensure the API is ready (model loaded from cache) when the user makes a request
+def warmup():
+    print("Warming up the API...")
+    resp = requests.get(warm_up_url, headers=headers)
+    print("Warmup response:", resp.status_code)
+@st.cache_resource
+def start_warmup_thread():
+    thread = threading.Thread(target=warmup, daemon=True)
+    thread.start()
+    return "warmup_started"
+start_warmup_thread()
+
+
 st.set_page_config(page_title="AI-Hab Habitat Classifier", page_icon="static/img/ai-hab-logo-transparent.png", layout="centered")
+
 st.title("AI-Hab Habitat Classifier")
 
-#tab1, tab2, tab3 = st.tabs(["Location", "Image", "Prediction"])
-
-#with tab1:
-    # st.write("## Location")
-location = get_geolocation()
-    # if location is not None:
-    #     st.map([{"lat": location['coords']['latitude'], "lon": location['coords']['longitude']}])
-    # else:
-    #     st.warning("Location is not enabled.")
+st.markdown("AI-Hab is a habitat classification model developed by the [Laboratory of Vision Engineering](https://www.visioneng.org.uk/) at the [University of Lincoln](https://www.lincoln.ac.uk/) and the [UK Centre for Ecology & Hydrology](https://www.ceh.ac.uk/). It is based on the [UKHab](https://www.ukhab.org/) Habitat Classification system and uses computer vision to classify habitats from images. The model is trained on images from the [UKCEH Contryside Survey](https://www.ceh.ac.uk/our-science/projects/countryside-survey).") 
 
 # Take photo or upload
-#with tab2:
 st.write("## Capture or Upload Image")
 img = st.camera_input("Take a photo of the habitat") or st.file_uploader("Or upload a photo", type=["png", "jpg", "jpeg"])
+location = get_geolocation()
 
-#with tab3:
 if img:
     # Send to API
     with st.spinner("Analyzing habitat..."):
@@ -94,5 +101,21 @@ with col1:
 with col2:
     st.image("static/img/University-of-Lincoln.png")
 
-st.write("AI-Hab is a habitat classification model developed by the UK Centre for Ecology & Hydrology and the University of Lincoln. It is based on the UKHab Habitat Classification system and uses computer vision to classify habitats from images.")       
-        
+st.markdown("Read the preprint: [Habitat Classification from Ground-Level Imagery Using Deep Neural Networks](https://arxiv.org/abs/2507.04017).")      
+st.markdown("View the code to this demonstrator app on [GitHub](https://github.com/NERC-CEH/aihab-streamlit-demo)")
+
+# Load licence markdown (cached)
+@st.cache_data
+def load_licence():
+    with open("static/licence/licence.md", "r", encoding="utf-8") as f:
+        return f.read()
+
+# Define a dialog using the new decorator
+@st.dialog("Terms and Conditions for AI-Hab API access")
+def licence_dialog():
+    st.markdown(load_licence())
+    st.button("Close", on_click=lambda: st.session_state.update(show_dialog=False))
+
+# Create a button to open the dialog
+if st.button("View Terms and Conditions"):
+    licence_dialog()
