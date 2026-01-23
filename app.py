@@ -37,7 +37,7 @@ st.set_page_config(page_title="AI-Hab Habitat Classifier", page_icon="static/img
 
 st.title("AI-Hab Habitat Classifier")
 
-st.markdown("AI-Hab is a habitat classification model developed by the [Laboratory of Vision Engineering](https://www.visioneng.org.uk/) at the [University of Lincoln](https://www.lincoln.ac.uk/) and the [UK Centre for Ecology & Hydrology](https://www.ceh.ac.uk/). It is based on the [UKHab](https://www.ukhab.org/) Habitat Classification system and uses computer vision to classify habitats from images. The model is trained on images from the [UKCEH Contryside Survey](https://www.ceh.ac.uk/our-science/projects/countryside-survey).") 
+st.markdown("AI-Hab is a habitat classification model developed by the [Laboratory of Vision Engineering](https://www.visioneng.org.uk/) at the [University of Lincoln](https://www.lincoln.ac.uk/), and the [UK Centre for Ecology & Hydrology](https://www.ceh.ac.uk/). It is based on the [UKHab](https://www.ukhab.org/) Habitat Classification system and uses computer vision to classify habitats from images. The model is trained on images from the [UKCEH Contryside Survey](https://www.ceh.ac.uk/our-science/projects/countryside-survey).") 
 
 # Take photo or upload
 st.write("## Capture or Upload Image")
@@ -99,6 +99,7 @@ with col1:
     st.write(" ")
     st.image("static/img/UKCEH.png")
 with col2:
+    
     st.image("static/img/University-of-Lincoln.png")
 
 st.markdown("Read the preprint: [Habitat Classification from Ground-Level Imagery Using Deep Neural Networks](https://arxiv.org/abs/2507.04017).")      
@@ -114,7 +115,6 @@ def load_licence():
 @st.dialog("Terms and Conditions for AI-Hab API access")
 def licence_dialog():
     st.markdown(load_licence())
-    st.button("Close", on_click=lambda: st.session_state.update(show_dialog=False))
 
 # Create a button to open the dialog
 if st.button("View Terms and Conditions"):

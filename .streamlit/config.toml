@@ -2,7 +2,16 @@
 base="light"
 primaryColor="slateBlue"
 baseRadius="full"
+font = "Arial, sans-serif"
 
+
+[theme_ukceh]
+base="dark"
+backgroundColor="#000000"
+primaryColor="slateBlue"
+baseRadius="none"
+font = "Arial, sans-serif"
+linkColor = "#DBFE52"
 
 [server]
 maxUploadSize = 20
