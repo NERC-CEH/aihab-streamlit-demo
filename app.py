@@ -65,6 +65,15 @@ def get_hf_token():
     return os.getenv("HF_AUTH_TOKEN")
 
 
+def reset_for_new_habitat():
+    """Reset capture/prediction state while preserving user identity."""
+    preserved_observer = st.session_state.get("observer_name_saved", "")
+    new_widget_run = st.session_state.get("widget_run", 0) + 1
+    st.session_state.clear()
+    st.session_state["observer_name_saved"] = preserved_observer
+    st.session_state["widget_run"] = new_widget_run
+
+
 # Warmup function this runs in a separate thread to avoid blocking the main app and to ensure the API is ready (model loaded from cache) when the user makes a request
 def warmup():
     print("Warming up the API...")
@@ -82,11 +91,26 @@ st.set_page_config(page_title="AI-Hab Habitat Classifier", page_icon="static/img
 
 st.title("AI-Hab Habitat Classifier")
 
+st.markdown(
+    """
+    <style>
+    .st-key-upload_panel {
+        background-color: #f8fff7;
+        border: 1px solid #d9d9d9;
+        border-radius: 10px;
+        padding: 1rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 st.markdown("AI-Hab is a habitat classification model developed by the [Laboratory of Vision Engineering](https://www.visioneng.org.uk/) at the [University of Lincoln](https://www.lincoln.ac.uk/), and the [UK Centre for Ecology & Hydrology](https://www.ceh.ac.uk/). It is based on the [UKHab](https://www.ukhab.org/) Habitat Classification system and uses computer vision to classify habitats from images. The model is trained on images from the [UKCEH Contryside Survey](https://www.ceh.ac.uk/our-science/projects/countryside-survey).") 
 
 # Take photo or upload
 st.write("## Capture or Upload Image")
-img = st.camera_input("Take a photo of the habitat") or st.file_uploader("Or upload a photo", type=["png", "jpg", "jpeg"])
+widget_run = st.session_state.get("widget_run", 0)
+img = st.camera_input("Take a photo of the habitat", key=f"camera_{widget_run}") or st.file_uploader("Or upload a photo", type=["png", "jpg", "jpeg"], key=f"uploader_{widget_run}")
 location = get_geolocation()
 
 if img:
@@ -148,9 +172,6 @@ if img:
 
     st.image(img, caption="Uploaded image")
 
-
-    st.warning("**Note:** The model is still in development and may not be accurate.")
-
     # Show secondary predictions
     st.write("## Predictions")
     st.write("Inference time: "+ str(data["inference_time_ms"]/1000) + " seconds" )
@@ -165,138 +186,151 @@ if img:
             st.write("" + " > ".join([h['name'] for h in pred['primary_habitat_hierarchy']]))
 
     
+    with st.container(key="upload_panel"):
+        st.write("## Image Upload")
+        st.info("By submitting, you confirm you have permission to upload this image and agree to the Terms and Conditions.")
 
-    st.write("## Image Upload")
-    st.info("By submitting, you confirm you have permission to upload this image and agree to the Terms and Conditions.")
+        if "observer_name_saved" not in st.session_state:
+            st.session_state["observer_name_saved"] = ""
 
-    top_3_predictions = [
-        {
-            "code": pred.get("code"),
-            "name": pred.get("name"),
-            "confidence": pred.get("confidence"),
-        }
-        for pred in predictions[:3]
-    ]
-
-    default_habitat = f"{predictions[0]['code']} - {predictions[0]['name']}"
-    habitat_options = HABITAT_OPTIONS.copy()
-    if default_habitat not in habitat_options:
-        habitat_options.insert(0, default_habitat)
-
-    selected_habitat = st.selectbox(
-        "Select habitat label",
-        options=habitat_options,
-        index=habitat_options.index(default_habitat),
-        help="Defaults to the top AI prediction. You can choose another habitat from the full list.",
-    )
-    if selected_habitat == default_habitat:
-        st.caption("👍 Your current selection agrees with the AI's top prediction.")
-    else:
-        st.caption("👎 Your current selection differs from the AI's top prediction.")
-    selected_date = st.date_input(
-        "Observation date",
-        value=st.session_state.get("submission_date"),
-    )
-    selected_time = st.time_input(
-        "Observation time (UTC)",
-        value=st.session_state.get("submission_time"),
-        step=60,
-    )
-    selected_datetime = datetime.combine(selected_date, selected_time, tzinfo=timezone.utc)
-    lat_col, lon_col = st.columns(2)
-    with lat_col:
-        selected_lat = st.number_input(
-            "Latitude",
-            value=float(st.session_state.get("map_lat", prediction_lat if prediction_lat is not None else 0.0)),
-            min_value=-90.0,
-            max_value=90.0,
-            format="%.6f",
-            key="input_lat",
+        observer_name = st.text_input(
+            "Name (will be saved for each new photo you add in this session)",
+            value=st.session_state.get("observer_name_saved", ""),
+            key="observer_name_input",
+            help="Set once per session. It will be reused for all uploaded photos.",
         )
-    with lon_col:
-        selected_lon = st.number_input(
-            "Longitude",
-            value=float(st.session_state.get("map_lon", prediction_lon if prediction_lon is not None else 0.0)),
-            min_value=-180.0,
-            max_value=180.0,
-            format="%.6f",
-            key="input_lon",
+        st.session_state["observer_name_saved"] = observer_name.strip()
+
+        top_3_predictions = [
+            {
+                "code": pred.get("code"),
+                "name": pred.get("name"),
+                "confidence": pred.get("confidence"),
+            }
+            for pred in predictions[:3]
+        ]
+
+        default_habitat = f"{predictions[0]['code']} - {predictions[0]['name']}"
+        habitat_options = HABITAT_OPTIONS.copy()
+        if default_habitat not in habitat_options:
+            habitat_options.insert(0, default_habitat)
+
+        selected_habitat = st.selectbox(
+            "Select habitat label",
+            options=habitat_options,
+            index=habitat_options.index(default_habitat),
+            help="Defaults to the top AI prediction. You can choose another habitat from the full list.",
         )
-    st.caption("Click the map to update the location.")
-    _map = folium.Map(location=[selected_lat, selected_lon], zoom_start=13 if (selected_lat or selected_lon) else 5)
-    folium.Marker([selected_lat, selected_lon]).add_to(_map)
-    map_result = st_folium(_map, height=250, width="100%", returned_objects=["last_clicked"])
-    if map_result and map_result.get("last_clicked"):
-        clicked_lat = map_result["last_clicked"]["lat"]
-        clicked_lng = map_result["last_clicked"]["lng"]
-        if (clicked_lat, clicked_lng) != (st.session_state.get("map_lat"), st.session_state.get("map_lon")):
-            st.session_state["map_lat"] = clicked_lat
-            st.session_state["map_lon"] = clicked_lng
-            st.rerun()
-    comment = st.text_area("Comment", placeholder="Add an optional note about this habitat image")
-
-    selected_habitat_parts = selected_habitat.split(" - ", 1)
-    selected_habitat_code = selected_habitat_parts[0]
-    selected_habitat_name = selected_habitat_parts[1] if len(selected_habitat_parts) > 1 else ""
-
-    metadata_preview = {
-        "image_file": upload_name,
-        "datetime": selected_datetime.isoformat(),
-        "lat": selected_lat,
-        "long": selected_lon,
-        "top_3_predictions": top_3_predictions,
-        "selected_habitat_code": selected_habitat_code,
-        "selected_habitat_name": selected_habitat_name,
-        "comment": comment,
-    }
-
-    
-    st.caption("Please review the Terms and Conditions before submitting.")
-
-    already_uploaded = st.session_state.get("bucket_uploaded_for") == image_id
-    if already_uploaded:
-        uploaded_image_path = st.session_state.get("bucket_uploaded_image_path")
-        uploaded_metadata_path = st.session_state.get("bucket_uploaded_metadata_path")
-        st.success(f"Image uploaded to hf://buckets/{HF_BUCKET_ID}/{uploaded_image_path}")
-        st.success(f"Metadata uploaded to hf://buckets/{HF_BUCKET_ID}/{uploaded_metadata_path}")
-        if st.button("Identify a new habitat", type="secondary"):
-            st.markdown(
-                '<meta http-equiv="refresh" content="0; url=/">',
-                unsafe_allow_html=True,
-            )
-    elif st.button("Upload image", type="primary"):
-        hf_token = get_hf_token()
-        if not hf_token:
-            st.error("Missing HF token. Add HF_AUTH_TOKEN to environment variables.")
+        if selected_habitat == default_habitat:
+            st.caption("👍 Your current selection agrees with the AI's top prediction.")
         else:
-            try:
-                upload_stem = os.path.splitext(upload_name)[0]
-                remote_image_name = f"images/{upload_name}"
-                remote_metadata_name = f"metadata/{upload_stem}.json"
-
-                uploaded_image_path = upload_bytes_to_hf_bucket(
-                    file_bytes=cached_bytes,
-                    filename=remote_image_name,
-                    bucket_id=HF_BUCKET_ID,
-                    bucket_prefix=HF_BUCKET_PREFIX,
-                    token=hf_token,
-                )
-
-                metadata_bytes = BytesIO(json.dumps(metadata_preview, indent=2).encode("utf-8")).getvalue()
-                uploaded_metadata_path = upload_bytes_to_hf_bucket(
-                    file_bytes=metadata_bytes,
-                    filename=remote_metadata_name,
-                    bucket_id=HF_BUCKET_ID,
-                    bucket_prefix=HF_BUCKET_PREFIX,
-                    token=hf_token,
-                )
-
-                st.session_state["bucket_uploaded_for"] = image_id
-                st.session_state["bucket_uploaded_image_path"] = uploaded_image_path
-                st.session_state["bucket_uploaded_metadata_path"] = uploaded_metadata_path
+            st.caption("Your current selection differs from the AI's top prediction.")
+        selected_date = st.date_input(
+            "Observation date",
+            value=st.session_state.get("submission_date"),
+        )
+        selected_time = st.time_input(
+            "Observation time (UTC)",
+            value=st.session_state.get("submission_time"),
+            step=60,
+        )
+        selected_datetime = datetime.combine(selected_date, selected_time, tzinfo=timezone.utc)
+        lat_col, lon_col = st.columns(2)
+        with lat_col:
+            selected_lat = st.number_input(
+                "Latitude",
+                value=float(st.session_state.get("map_lat", prediction_lat if prediction_lat is not None else 0.0)),
+                min_value=-90.0,
+                max_value=90.0,
+                format="%.6f",
+                key="input_lat",
+            )
+        with lon_col:
+            selected_lon = st.number_input(
+                "Longitude",
+                value=float(st.session_state.get("map_lon", prediction_lon if prediction_lon is not None else 0.0)),
+                min_value=-180.0,
+                max_value=180.0,
+                format="%.6f",
+                key="input_lon",
+            )
+        st.caption("Click the map to update the location.")
+        _map = folium.Map(location=[selected_lat, selected_lon], zoom_start=13 if (selected_lat or selected_lon) else 5)
+        folium.Marker([selected_lat, selected_lon]).add_to(_map)
+        map_result = st_folium(_map, height=250, width="100%", returned_objects=["last_clicked"])
+        if map_result and map_result.get("last_clicked"):
+            clicked_lat = map_result["last_clicked"]["lat"]
+            clicked_lng = map_result["last_clicked"]["lng"]
+            if (clicked_lat, clicked_lng) != (st.session_state.get("map_lat"), st.session_state.get("map_lon")):
+                st.session_state["map_lat"] = clicked_lat
+                st.session_state["map_lon"] = clicked_lng
                 st.rerun()
-            except Exception as exc:
-                st.error(f"Failed to upload to Hugging Face bucket: {exc}")
+        comment = st.text_area("Comment", placeholder="Add an optional note about this habitat image")
+
+        selected_habitat_parts = selected_habitat.split(" - ", 1)
+        selected_habitat_code = selected_habitat_parts[0]
+        selected_habitat_name = selected_habitat_parts[1] if len(selected_habitat_parts) > 1 else ""
+
+        metadata_preview = {
+            "image_file": upload_name,
+            "datetime": selected_datetime.isoformat(),
+            "lat": selected_lat,
+            "long": selected_lon,
+            "user_name": st.session_state.get("observer_name_saved", ""),
+            "top_3_predictions": top_3_predictions,
+            "selected_habitat_code": selected_habitat_code,
+            "selected_habitat_name": selected_habitat_name,
+            "comment": comment,
+        }
+
+        st.caption("Please review the Terms and Conditions before submitting.")
+
+        already_uploaded = st.session_state.get("bucket_uploaded_for") == image_id
+        if already_uploaded:
+            uploaded_image_path = st.session_state.get("bucket_uploaded_image_path")
+            uploaded_metadata_path = st.session_state.get("bucket_uploaded_metadata_path")
+            st.success(f"Image uploaded to hf://buckets/{HF_BUCKET_ID}/{uploaded_image_path}")
+            st.success(f"Metadata uploaded to hf://buckets/{HF_BUCKET_ID}/{uploaded_metadata_path}")
+            if st.button("Identify a new habitat", type="secondary"):
+                reset_for_new_habitat()
+                st.rerun()
+        elif st.button("Upload image", type="primary"):
+            if not st.session_state.get("observer_name_saved", ""):
+                st.error("Please enter your user name before uploading.")
+                st.stop()
+
+            hf_token = get_hf_token()
+            if not hf_token:
+                st.error("Missing HF token. Add HF_AUTH_TOKEN to environment variables.")
+            else:
+                try:
+                    upload_stem = os.path.splitext(upload_name)[0]
+                    remote_image_name = f"images/{upload_name}"
+                    remote_metadata_name = f"metadata/{upload_stem}.json"
+
+                    uploaded_image_path = upload_bytes_to_hf_bucket(
+                        file_bytes=cached_bytes,
+                        filename=remote_image_name,
+                        bucket_id=HF_BUCKET_ID,
+                        bucket_prefix=HF_BUCKET_PREFIX,
+                        token=hf_token,
+                    )
+
+                    metadata_bytes = BytesIO(json.dumps(metadata_preview, indent=2).encode("utf-8")).getvalue()
+                    uploaded_metadata_path = upload_bytes_to_hf_bucket(
+                        file_bytes=metadata_bytes,
+                        filename=remote_metadata_name,
+                        bucket_id=HF_BUCKET_ID,
+                        bucket_prefix=HF_BUCKET_PREFIX,
+                        token=hf_token,
+                    )
+
+                    st.session_state["bucket_uploaded_for"] = image_id
+                    st.session_state["bucket_uploaded_image_path"] = uploaded_image_path
+                    st.session_state["bucket_uploaded_metadata_path"] = uploaded_metadata_path
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Failed to upload to Hugging Face bucket: {exc}")
 
 
     st.write("## API Response")
