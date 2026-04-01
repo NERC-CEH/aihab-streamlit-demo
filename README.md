@@ -15,6 +15,8 @@ The API is in development and is currently hosted on the UKCEH Posit Connect ser
 
 * **Camera capture or file upload**: Take a photo directly in the app or upload an existing image.
 * **API-powered predictions**: Sends the image to a Posit Connect API for habitat classification.
+* **Manual Hugging Face bucket upload**: After prediction, press a button to upload data to `aihab-uk/habitatimages`.
+* **Metadata capture**: Captures datetime, location, top-3 predictions with confidence, selected habitat label, and user comment.
 * **Expandable API response**: Inspect full JSON responses directly in the app.
 
 ## Requirements
@@ -23,6 +25,7 @@ The API is in development and is currently hosted on the UKCEH Posit Connect ser
 * [Streamlit](https://streamlit.io)
 * `requests`
 * `python-dotenv`
+* `huggingface_hub`
 
 ## Installation
 
@@ -46,6 +49,12 @@ The API is in development and is currently hosted on the UKCEH Posit Connect ser
    API_URL=<your-api-url>
    ```
 
+4. Add your Hugging Face token in your environment configuration:
+
+   ```bash
+   HF_AUTH_TOKEN=<your-huggingface-token>
+   ```
+
 ## Running the App
 
 Run the Streamlit app locally:
@@ -60,6 +69,26 @@ The app will open in your browser at `http://localhost:8501`.
 
 * `API_KEY`: Your API key for authenticating with the API.
 * `API_URL`: Base URL of the API.
+* `HF_AUTH_TOKEN`: Hugging Face token used for bucket uploads.
+* `HF_BUCKET_PREFIX` (optional): Prefix/folder inside the fixed bucket `aihab-uk/habitatimages`.
+
+## Hugging Face Bucket Upload
+
+After the prediction response is shown, press **Submit image to bucket** to upload to `hf://buckets/aihab-uk/habitatimages`.
+
+Files are organized as:
+
+* `images/<image-file>`
+* `metadata/<image-file-stem>.json`
+
+The metadata JSON contains:
+
+* Image file name
+* Datetime
+* Latitude and longitude (when available)
+* Top 3 AI-predicted habitats and confidence values
+* Habitat label selected by the user
+* User comment
 
 ## Project Structure
 

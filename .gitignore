@@ -3,3 +3,4 @@
 venv
 
 rsconnect-python/
+__pycache__/
