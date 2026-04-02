@@ -1,7 +1,9 @@
 [theme]
 base="light"
+backgroundColor="#fffdf5"
+textColor="#141414"
 primaryColor="slateBlue"
-baseRadius="full"
+baseRadius="none"
 font = "Arial, sans-serif"
 
 
