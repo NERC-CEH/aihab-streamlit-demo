@@ -64,6 +64,7 @@ CARDINAL_DIRECTION_TO_DEGREES = {
 CARDINAL_DIRECTIONS = list(CARDINAL_DIRECTION_TO_DEGREES.keys())
 
 
+## Convert numeric heading to nearest cardinal/intercardinal direction.
 def heading_to_cardinal(heading):
     """Map heading in degrees to nearest cardinal/intercardinal direction."""
     if heading is None:
@@ -73,6 +74,7 @@ def heading_to_cardinal(heading):
     return CARDINAL_DIRECTIONS[idx]
 
 
+## Read compass heading from browser device-orientation APIs.
 def get_compass_heading(measurement_key):
     """Attempt to read device compass heading in degrees (0-360, where 0 is north)."""
     js_expression = """
@@ -83,6 +85,20 @@ def get_compass_heading(measurement_key):
                 }
                 const n = ((Number(value) % 360) + 360) % 360;
                 return Math.round(n * 10) / 10;
+            };
+
+            const getScreenOrientationAngle = () => {
+                try {
+                    if (typeof screen !== "undefined" && screen.orientation && typeof screen.orientation.angle === "number") {
+                        return screen.orientation.angle;
+                    }
+                    if (typeof window !== "undefined" && typeof window.orientation === "number") {
+                        return window.orientation;
+                    }
+                } catch (_err) {
+                    return 0;
+                }
+                return 0;
             };
 
             try {
@@ -103,10 +119,14 @@ def get_compass_heading(measurement_key):
 
                     const handler = (event) => {
                         const webkitHeading = event.webkitCompassHeading;
+                        const alphaHeading =
+                            event.alpha !== null && event.alpha !== undefined
+                                ? (360 - Number(event.alpha)) + getScreenOrientationAngle()
+                                : null;
                         const heading =
                             webkitHeading !== undefined && webkitHeading !== null
                                 ? webkitHeading
-                                : (event.alpha !== null && event.alpha !== undefined ? 360 - event.alpha : null);
+                                : alphaHeading;
                         finish(heading);
                     };
 
@@ -139,6 +159,7 @@ def get_compass_heading(measurement_key):
     return None
 
 
+## Upload raw bytes to the configured Hugging Face bucket path.
 def upload_bytes_to_hf_bucket(file_bytes, filename, bucket_id, bucket_prefix="", token=None):
     """Upload bytes to a Hugging Face bucket path."""
     api = HfApi(token=token)
@@ -147,11 +168,13 @@ def upload_bytes_to_hf_bucket(file_bytes, filename, bucket_id, bucket_prefix="",
     return remote_path
 
 
+## Fetch Hugging Face auth token from environment.
 def get_hf_token():
     """Read token from process environment."""
     return os.getenv("HF_AUTH_TOKEN")
 
 
+## Clear per-capture state while keeping observer name between captures.
 def reset_for_new_habitat():
     """Reset capture/prediction state while preserving user identity."""
     preserved_observer = st.session_state.get("observer_name_saved", "")
@@ -161,17 +184,20 @@ def reset_for_new_habitat():
     st.session_state["widget_run"] = new_widget_run
 
 
+## Normalize image extension to supported upload formats.
 def get_image_file_ext(image_file):
     """Get a safe image extension for API upload content-type handling."""
     file_ext = os.path.splitext(getattr(image_file, "name", "habitat.jpg"))[1].lower()
     return file_ext if file_ext in {".jpg", ".jpeg", ".png"} else ".jpg"
 
 
+## Build cache key from filename and file content hash.
 def build_image_id(image_file, image_bytes):
     """Create a deterministic image id for session caching."""
     return f"{getattr(image_file, 'name', 'habitat')}-{hashlib.sha256(image_bytes).hexdigest()}"
 
 
+## Safely extract latitude/longitude from geolocation payload.
 def get_location_coords(location):
     """Extract lat/lon if available from browser geolocation payload."""
     if not location or "coords" not in location:
@@ -179,6 +205,7 @@ def get_location_coords(location):
     return location["coords"].get("latitude"), location["coords"].get("longitude")
 
 
+## Submit image and optional coordinates to prediction API.
 def request_prediction(upload_name, image_bytes, file_ext, captured_lat, captured_lon):
     """Call prediction API and return parsed JSON response."""
     content_type = "image/png" if file_ext == ".png" else "image/jpeg"
@@ -191,6 +218,7 @@ def request_prediction(upload_name, image_bytes, file_ext, captured_lat, capture
     return resp.json()
 
 
+## Persist prediction payload and default submission values in session state.
 def cache_prediction_state(
     image_id,
     data,
@@ -219,11 +247,13 @@ def cache_prediction_state(
     st.session_state["bucket_uploaded_metadata_path"] = None
 
 
+## Pick badge color from confidence threshold.
 def confidence_badge_color(confidence):
     """Color confidence badge using a fixed threshold."""
     return "green" if confidence > 0.5 else "orange"
 
 
+## Build compact top-N prediction list for metadata.
 def extract_top_predictions(predictions, limit=3):
     """Keep a compact top-N summary for metadata upload."""
     return [
@@ -236,6 +266,7 @@ def extract_top_predictions(predictions, limit=3):
     ]
 
 
+## Render the predictions card panel and inference timing.
 def render_predictions_panel(predictions, inference_time_ms):
     """Render prediction cards in a dedicated styled panel."""
     with st.container(key="predictions_panel"):
@@ -253,6 +284,7 @@ def render_predictions_panel(predictions, inference_time_ms):
         st.caption(f"Inference time: {inference_time_ms/1000} seconds")
 
 
+## Construct metadata JSON object for bucket upload.
 def build_metadata_preview(
     upload_name,
     selected_datetime,
@@ -284,6 +316,7 @@ def build_metadata_preview(
     }
 
 
+## Render upload form and handle final image/metadata submission.
 def render_submission_panel(
     image_id,
     predictions,
@@ -358,31 +391,35 @@ def render_submission_panel(
                 key="input_lon",
             )
 
-        auto_direction = heading_to_cardinal(prediction_heading)
-        direction_options = ["", *CARDINAL_DIRECTIONS]
-        default_direction = auto_direction if auto_direction else ""
-        selected_direction = st.selectbox(
-            "Photo direction",
-            options=direction_options,
-            index=direction_options.index(default_direction),
-            help="Direction classes only (N/NE/E/SE/S/SW/W/NW). Auto-filled from compass when available.",
-        )
-        selected_direction_value = selected_direction or None
-        selected_heading = CARDINAL_DIRECTION_TO_DEGREES.get(selected_direction_value)
-
-        if auto_direction:
-            st.caption(f"Auto-detected direction from compass: {auto_direction}")
-            if selected_direction_value and selected_direction_value != auto_direction:
-                bearing_source = "manual_override_cardinal"
-            elif selected_direction_value:
-                bearing_source = "sensor_translated_cardinal"
-            else:
-                bearing_source = None
-        elif selected_direction_value:
-            bearing_source = "manual_cardinal"
-        else:
-            st.caption("Compass heading was not available. Please select an approximate direction.")
-            bearing_source = None
+        # Temporarily disable compass/direction UI and metadata until heading is reliable.
+        # auto_direction = heading_to_cardinal(prediction_heading)
+        # direction_options = ["", *CARDINAL_DIRECTIONS]
+        # default_direction = auto_direction if auto_direction else ""
+        # selected_direction = st.selectbox(
+        #     "Photo direction",
+        #     options=direction_options,
+        #     index=direction_options.index(default_direction),
+        #     help="Direction classes only (N/NE/E/SE/S/SW/W/NW). Auto-filled from compass when available.",
+        # )
+        # selected_direction_value = selected_direction or None
+        # selected_heading = CARDINAL_DIRECTION_TO_DEGREES.get(selected_direction_value)
+        #
+        # if auto_direction:
+        #     st.caption(f"Auto-detected direction from compass: {auto_direction}")
+        #     if selected_direction_value and selected_direction_value != auto_direction:
+        #         bearing_source = "manual_override_cardinal"
+        #     elif selected_direction_value:
+        #         bearing_source = "sensor_translated_cardinal"
+        #     else:
+        #         bearing_source = None
+        # elif selected_direction_value:
+        #     bearing_source = "manual_cardinal"
+        # else:
+        #     st.caption("Compass heading was not available. Please select an approximate direction.")
+        #     bearing_source = None
+        selected_direction_value = None
+        selected_heading = None
+        bearing_source = None
 
         st.caption("Click the map to update the location.")
         _map = folium.Map(location=[selected_lat, selected_lon], zoom_start=16 if (selected_lat or selected_lon) else 5)
@@ -463,6 +500,7 @@ def render_submission_panel(
                     st.error(f"Failed to upload to Hugging Face bucket: {exc}")
 
 
+## Render expandable raw API response for diagnostics.
 def render_api_response(data):
     """Render raw API response in a collapsible panel for debugging."""
     st.write("## API Response")
@@ -471,10 +509,12 @@ def render_api_response(data):
 
 
 # Warmup function this runs in a separate thread to avoid blocking the main app and to ensure the API is ready (model loaded from cache) when the user makes a request
+## Warm up backend model endpoint on app start.
 def warmup():
     print("Warming up the API...")
     resp = requests.get(warm_up_url, headers=headers)
     print("Warmup response:", resp.status_code)
+## Start warmup in a background thread once per session.
 @st.cache_resource
 def start_warmup_thread():
     thread = threading.Thread(target=warmup, daemon=True)
@@ -535,9 +575,11 @@ if img:
         upload_name = f"habitat_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}{file_ext}"
         default_submission_datetime = datetime.now(timezone.utc).replace(second=0, microsecond=0)
         captured_lat, captured_lon = get_location_coords(location)
-        captured_heading = get_compass_heading(
-            measurement_key=f"compass_{widget_run}_{hashlib.sha256(image_bytes).hexdigest()[:10]}"
-        )
+        # Temporarily disable compass heading capture.
+        # captured_heading = get_compass_heading(
+        #     measurement_key=f"compass_{widget_run}_{hashlib.sha256(image_bytes).hexdigest()[:10]}"
+        # )
+        captured_heading = None
 
         # Send to API only for new images.
         with st.spinner("Analyzing habitat..."):
@@ -586,6 +628,7 @@ if img:
 
 
 # Load licence markdown (cached)
+## Load Terms and Conditions markdown content.
 @st.cache_data
 def load_licence():
     with open("static/licence/licence.md", "r", encoding="utf-8") as f:
@@ -593,6 +636,7 @@ def load_licence():
 
 
 # Define a dialog using the new decorator
+## Render Terms and Conditions dialog content.
 @st.dialog("Terms and Conditions for AI-Hab API access")
 def licence_dialog():
     st.markdown(load_licence())
