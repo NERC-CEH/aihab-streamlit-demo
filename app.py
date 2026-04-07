@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import requests
 import json
 import os
@@ -178,9 +179,14 @@ def get_hf_token():
 def reset_for_new_habitat():
     """Reset capture/prediction state while preserving user identity."""
     preserved_observer = st.session_state.get("observer_name_saved", "")
+    preserved_browser_lat = st.session_state.get("browser_lat")
+    preserved_browser_lon = st.session_state.get("browser_lon")
     new_widget_run = st.session_state.get("widget_run", 0) + 1
     st.session_state.clear()
     st.session_state["observer_name_saved"] = preserved_observer
+    if preserved_browser_lat is not None and preserved_browser_lon is not None:
+        st.session_state["browser_lat"] = preserved_browser_lat
+        st.session_state["browser_lon"] = preserved_browser_lon
     st.session_state["widget_run"] = new_widget_run
 
 
@@ -203,6 +209,17 @@ def get_location_coords(location):
     if not location or "coords" not in location:
         return None, None
     return location["coords"].get("latitude"), location["coords"].get("longitude")
+
+
+## Read and cache browser location for reuse across reruns.
+def sync_browser_location():
+    """Store the latest successful browser geolocation in session state."""
+    location = get_geolocation()
+    lat, lon = get_location_coords(location)
+    if lat is not None and lon is not None:
+        st.session_state["browser_lat"] = float(lat)
+        st.session_state["browser_lon"] = float(lon)
+    return st.session_state.get("browser_lat"), st.session_state.get("browser_lon")
 
 
 ## Submit image and optional coordinates to prediction API.
@@ -230,6 +247,9 @@ def cache_prediction_state(
     captured_heading,
 ):
     """Persist prediction and submission defaults in session state."""
+    resolved_lat = captured_lat if captured_lat is not None else st.session_state.get("browser_lat")
+    resolved_lon = captured_lon if captured_lon is not None else st.session_state.get("browser_lon")
+
     st.session_state["prediction_image_id"] = image_id
     st.session_state["prediction_data"] = data
     st.session_state["prediction_upload_name"] = upload_name
@@ -237,11 +257,14 @@ def cache_prediction_state(
     st.session_state["prediction_datetime_utc"] = default_submission_datetime.isoformat()
     st.session_state["submission_date"] = default_submission_datetime.date()
     st.session_state["submission_time"] = default_submission_datetime.time().replace(second=0, microsecond=0)
-    st.session_state["prediction_lat"] = captured_lat
-    st.session_state["prediction_lon"] = captured_lon
+    st.session_state["prediction_lat"] = resolved_lat
+    st.session_state["prediction_lon"] = resolved_lon
     st.session_state["prediction_heading"] = captured_heading
-    st.session_state["map_lat"] = captured_lat if captured_lat is not None else 0.0
-    st.session_state["map_lon"] = captured_lon if captured_lon is not None else 0.0
+    st.session_state["map_lat"] = float(resolved_lat) if resolved_lat is not None else 0.0
+    st.session_state["map_lon"] = float(resolved_lon) if resolved_lon is not None else 0.0
+    if resolved_lat is not None and resolved_lon is not None:
+        st.session_state["input_lat"] = float(resolved_lat)
+        st.session_state["input_lon"] = float(resolved_lon)
     st.session_state["bucket_uploaded_for"] = None
     st.session_state["bucket_uploaded_image_path"] = None
     st.session_state["bucket_uploaded_metadata_path"] = None
@@ -267,10 +290,12 @@ def extract_top_predictions(predictions, limit=3):
 
 
 ## Render the predictions card panel and inference timing.
-def render_predictions_panel(predictions, inference_time_ms):
+def render_predictions_panel(predictions, inference_time_ms, image_bytes=None, image_caption=None):
     """Render prediction cards in a dedicated styled panel."""
     with st.container(key="predictions_panel"):
-        st.write("## Predictions")
+        #st.write("## Predictions")
+        if image_bytes is not None:
+            st.image(image_bytes, caption=image_caption, width=300)
         for pred in predictions:
             title_col, badge_col = st.columns([4, 2])
             with title_col:
@@ -328,7 +353,7 @@ def render_submission_panel(
 ):
     """Render user submission controls and perform bucket upload on submit."""
     with st.container(key="upload_panel"):
-        st.write("## Submit observation")
+        #st.write("## Submit observation")
         st.info("Your image will be used to evaluate and improve the AI-Hab model. By submitting, you confirm you have permission to upload this image and agree to the Terms and Conditions.")
 
         if "observer_name_saved" not in st.session_state:
@@ -422,9 +447,28 @@ def render_submission_panel(
         bearing_source = None
 
         st.caption("Click the map to update the location.")
-        _map = folium.Map(location=[selected_lat, selected_lon], zoom_start=16 if (selected_lat or selected_lon) else 5)
-        folium.Marker([selected_lat, selected_lon]).add_to(_map)
-        map_result = st_folium(_map, height=250, width="100%", returned_objects=["last_clicked"])
+        _map = folium.Map(
+            location=[selected_lat, selected_lon],
+            zoom_start=16 if (selected_lat or selected_lon) else 5,
+            control_scale=True,
+        )
+        folium.CircleMarker(
+            location=[selected_lat, selected_lon],
+            radius=8,
+            color="#d63384",
+            weight=2,
+            fill=True,
+            fill_color="#ff4b4b",
+            fill_opacity=0.9,
+            tooltip="Observation location",
+        ).add_to(_map)
+        map_result = st_folium(
+            _map,
+            height=250,
+            width="100%",
+            returned_objects=["last_clicked"],
+            key=f"observation_map_{image_id}",
+        )
         if map_result and map_result.get("last_clicked"):
             clicked_lat = map_result["last_clicked"]["lat"]
             clicked_lng = map_result["last_clicked"]["lng"]
@@ -503,10 +547,147 @@ def render_submission_panel(
 ## Render expandable raw API response for diagnostics.
 def render_api_response(data):
     """Render raw API response in a collapsible panel for debugging."""
-    st.write("## API Response")
-    with st.expander("Show response data"):
+    with st.expander("Show API response data"):
         st.code(json.dumps(data, indent=2), language="json")
 
+
+## Switch to a specific rendered tab after a rerun.
+def switch_to_rendered_tab(tab_index, nonce=0):
+    """Use a small frontend script to activate a Streamlit tab by index."""
+    components.html(
+        f"""
+        <div data-tab-switch-nonce="{nonce}" style="display:none"></div>
+        <script>
+        const clickTab = () => {{
+            const parentDoc = window.parent.document;
+            const tabs = parentDoc.querySelectorAll('button[role="tab"]');
+            if (tabs.length > {tab_index}) {{
+                const targetTab = tabs[{tab_index}];
+                targetTab.click();
+
+                const anchor = parentDoc.getElementById('results-tabs-anchor');
+                if (anchor) {{
+                    anchor.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
+                }} else {{
+                    targetTab.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
+                }}
+                return true;
+            }}
+            return false;
+        }};
+
+        if (!clickTab()) {{
+            const interval = setInterval(() => {{
+                if (clickTab()) {{
+                    clearInterval(interval);
+                }}
+            }}, 100);
+            setTimeout(() => clearInterval(interval), 2000);
+        }}
+        </script>
+        """,
+        height=0,
+    )
+
+
+## Open a fresh modal flow for capture or upload tasks.
+def open_photo_modal(dialog_fn):
+    """Reset the current image workflow and open the requested modal."""
+    reset_for_new_habitat()
+    dialog_fn()
+
+
+## Process an image inside the active modal and return results to the main page.
+def render_image_workflow(img, source_caption):
+    """Analyze an image, cache the result, then close the modal."""
+    if not img:
+        return
+
+    image_bytes = img.getvalue()
+    file_ext = get_image_file_ext(img)
+    image_id = build_image_id(img, image_bytes)
+
+    cached_image_id = st.session_state.get("prediction_image_id")
+    if cached_image_id != image_id:
+        upload_name = f"habitat_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}{file_ext}"
+        default_submission_datetime = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+        captured_lat = st.session_state.get("browser_lat")
+        captured_lon = st.session_state.get("browser_lon")
+        # Temporarily disable compass heading capture.
+        # captured_heading = get_compass_heading(
+        #     measurement_key=f"compass_{st.session_state.get('widget_run', 0)}_{hashlib.sha256(image_bytes).hexdigest()[:10]}"
+        # )
+        captured_heading = None
+
+        with st.spinner("Analyzing habitat..."):
+            data = request_prediction(upload_name, image_bytes, file_ext, captured_lat, captured_lon)
+
+        cache_prediction_state(
+            image_id=image_id,
+            data=data,
+            upload_name=upload_name,
+            image_bytes=image_bytes,
+            default_submission_datetime=default_submission_datetime,
+            captured_lat=captured_lat,
+            captured_lon=captured_lon,
+            captured_heading=captured_heading,
+        )
+
+    data = st.session_state.get("prediction_data")
+    if not data:
+        st.error("Prediction failed: no response data returned.")
+        return
+
+    st.session_state["prediction_source_caption"] = source_caption
+    st.rerun()
+
+
+## Render cached prediction results on the main page.
+def render_cached_results():
+    """Show the latest analyzed image and its prediction details."""
+    data = st.session_state.get("prediction_data")
+    image_id = st.session_state.get("prediction_image_id")
+    upload_name = st.session_state.get("prediction_upload_name")
+    cached_bytes = st.session_state.get("prediction_image_bytes")
+    prediction_lat = st.session_state.get("prediction_lat")
+    prediction_lon = st.session_state.get("prediction_lon")
+    prediction_heading = st.session_state.get("prediction_heading")
+    source_caption = st.session_state.get("prediction_source_caption", "Habitat image")
+
+    if not data or not image_id or not upload_name or not cached_bytes:
+        return
+
+    predictions = data["results"]["ukhab"]
+
+    st.markdown("<div id='results-tabs-anchor'></div>", unsafe_allow_html=True)
+    predictions_tab, submission_tab = st.tabs(["Predictions", "Submit observation"])
+    with predictions_tab:
+        render_predictions_panel(
+            predictions,
+            data["inference_time_ms"],
+            image_bytes=cached_bytes,
+            image_caption=source_caption,
+        )
+        if st.button("Continue to submit observation", key="go_to_submit_tab", type="primary"):
+            st.session_state["switch_to_submission_tab"] = True
+            st.session_state["tab_switch_nonce"] = st.session_state.get("tab_switch_nonce", 0) + 1
+            st.rerun()
+
+    with submission_tab:
+        render_submission_panel(
+            image_id=image_id,
+            predictions=predictions,
+            upload_name=upload_name,
+            cached_bytes=cached_bytes,
+            prediction_lat=prediction_lat,
+            prediction_lon=prediction_lon,
+            prediction_heading=prediction_heading,
+        )
+
+    if st.session_state.pop("switch_to_submission_tab", False):
+        switch_to_rendered_tab(1, st.session_state.get("tab_switch_nonce", 0))
+
+    render_api_response(data)
 
 # Warmup function this runs in a separate thread to avoid blocking the main app and to ensure the API is ready (model loaded from cache) when the user makes a request
 ## Warm up backend model endpoint on app start.
@@ -523,13 +704,19 @@ def start_warmup_thread():
 start_warmup_thread()
 
 
-st.set_page_config(page_title="AI-Hab Habitat Classifier", page_icon="static/img/ai-hab-logo-transparent.png", layout="centered")
-
-st.title("AI-Hab Habitat Classifier")
-
+st.set_page_config(page_title="AI-Hab Identify", page_icon="static/img/ai-hab-logo-transparent.png", layout="wide")
 st.markdown(
     """
     <style>
+
+    section.main > div.block-container,
+    div[data-testid="stMainBlockContainer"] {
+        max-width: 860px !important;
+        width: 100%;
+        margin: 0 auto !important;
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+    }
 
     /* ── Submission panel ────────────────────────────────────────────── */
     .st-key-upload_panel,
@@ -550,81 +737,80 @@ st.markdown(
         width: 100%;
     }
 
+    .st-key-home_actions .stButton > button {
+        min-height: 7.5rem;
+        font-weight: 700;
+        border-radius: 16px;
+        padding: 0.75rem 1rem;
+    }
+
+    .st-key-home_actions .stButton > button p {
+        font-size: 1.45rem !important;
+        font-weight: 700 !important;
+        line-height: 1.2;
+        margin: 0;
+    }
+
+    .st-key-location_sync {
+        height: 0;
+        overflow: hidden;
+        opacity: 0;
+        margin: 0;
+        padding: 0;
+    }
+
     </style>
     """,
     unsafe_allow_html=True,
 )
+with st.container(key="location_sync"):
+    sync_browser_location()
 
-st.markdown("AI-Hab is a habitat classification model developed by the [Laboratory of Vision Engineering](https://www.visioneng.org.uk/) at the [University of Lincoln](https://www.lincoln.ac.uk/), and the [UK Centre for Ecology & Hydrology](https://www.ceh.ac.uk/). It is based on the [UKHab](https://www.ukhab.org/) Habitat Classification system and uses computer vision to classify habitats from images. The model is trained on images from the [UKCEH Contryside Survey](https://www.ceh.ac.uk/our-science/projects/countryside-survey).") 
+st.markdown("# AI-Hab *Identify*")
+st.markdown("Identify habitats to UK-Hab Level 3, powered by AI.")
 
-# Take photo or upload
-st.write("## Capture or Upload Image")
-widget_run = st.session_state.get("widget_run", 0)
-camera_img = st.camera_input("Take a photo of the habitat", key=f"camera_{widget_run}")
-uploaded_img = st.file_uploader("Or upload a photo", type=["png", "jpg", "jpeg"], key=f"uploader_{widget_run}")
-img = camera_img or uploaded_img
-location = get_geolocation()
-
-if img:
-    image_bytes = img.getvalue()
-    file_ext = get_image_file_ext(img)
-    image_id = build_image_id(img, image_bytes)
-
-    cached_image_id = st.session_state.get("prediction_image_id")
-    if cached_image_id != image_id:
-        upload_name = f"habitat_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}{file_ext}"
-        default_submission_datetime = datetime.now(timezone.utc).replace(second=0, microsecond=0)
-        captured_lat, captured_lon = get_location_coords(location)
-        # Temporarily disable compass heading capture.
-        # captured_heading = get_compass_heading(
-        #     measurement_key=f"compass_{widget_run}_{hashlib.sha256(image_bytes).hexdigest()[:10]}"
-        # )
-        captured_heading = None
-
-        # Send to API only for new images.
-        with st.spinner("Analyzing habitat..."):
-            data = request_prediction(upload_name, image_bytes, file_ext, captured_lat, captured_lon)
-
-        cache_prediction_state(
-            image_id=image_id,
-            data=data,
-            upload_name=upload_name,
-            image_bytes=image_bytes,
-            default_submission_datetime=default_submission_datetime,
-            captured_lat=captured_lat,
-            captured_lon=captured_lon,
-            captured_heading=captured_heading,
-        )
-
-    data = st.session_state.get("prediction_data")
-    upload_name = st.session_state.get("prediction_upload_name")
-    cached_bytes = st.session_state.get("prediction_image_bytes")
-    prediction_lat = st.session_state.get("prediction_lat")
-    prediction_lon = st.session_state.get("prediction_lon")
-    prediction_heading = st.session_state.get("prediction_heading")
-
-    if not data:
-        st.error("Prediction failed: no response data returned.")
-        st.stop()
-
-    # Display results
-    predictions = data["results"]["ukhab"]
-
-    if uploaded_img is not None:
-        st.image(uploaded_img, caption="Uploaded image")
-
-    render_predictions_panel(predictions, data["inference_time_ms"])
-    render_submission_panel(
-        image_id=image_id,
-        predictions=predictions,
-        upload_name=upload_name,
-        cached_bytes=cached_bytes,
-        prediction_lat=prediction_lat,
-        prediction_lon=prediction_lon,
-        prediction_heading=prediction_heading,
+@st.dialog("Take a habitat photo")
+def photo_capture_dialog():
+    st.info(
+        "**Tips for a good habitat photo**\n"
+        "- Hold the camera steady and keep the horizon level.\n"
+        "- Include the main habitat clearly, not just a close-up detail.\n"
+        "- Avoid blur, heavy shadow, or pointing directly into bright sunlight.\n"
     )
 
-    render_api_response(data)
+    widget_run = st.session_state.get("widget_run", 0)
+    camera_img = st.camera_input("Take a photo of the habitat", key=f"camera_{widget_run}")
+    render_image_workflow(camera_img, "Captured image")
+
+
+@st.dialog("Upload a habitat photo")
+def photo_upload_dialog():
+    st.info(
+        "**Tips for choosing a good photo**\n"
+        "- Pick an image where the habitat is the main subject.\n"
+        "- Avoid screenshots, collages, or heavily edited images.\n"
+        "- Choose a sharp photo with good lighting if possible.\n"
+        "- Wider scene photos are usually more useful than extreme close-ups."
+    )
+
+    widget_run = st.session_state.get("widget_run", 0)
+    uploaded_img = st.file_uploader(
+        "Choose an existing habitat image from your device",
+        type=["png", "jpg", "jpeg"],
+        key=f"uploader_{widget_run}",
+    )
+    render_image_workflow(uploaded_img, "Uploaded image")
+
+with st.container(key="home_actions"):
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("📷 Take a photo", key="open_camera_modal", type="primary"):
+            open_photo_modal(photo_capture_dialog)
+    with col2:
+        if st.button("🖼️ Upload a photo", key="open_upload_modal"):
+            open_photo_modal(photo_upload_dialog)
+
+render_cached_results()
 
 
 # Load licence markdown (cached)
@@ -643,6 +829,8 @@ def licence_dialog():
 
 
 with st.container(key="app_footer"):
+    st.write("---")
+    st.markdown("AI-Hab is a habitat classification model developed by the [Laboratory of Vision Engineering](https://www.visioneng.org.uk/) at the [University of Lincoln](https://www.lincoln.ac.uk/), and the [UK Centre for Ecology & Hydrology](https://www.ceh.ac.uk/). It is based on the [UKHab](https://www.ukhab.org/) Habitat Classification system and uses computer vision to identify habitats from images. The model is trained on images from the [UKCEH Contryside Survey](https://www.ceh.ac.uk/our-science/projects/countryside-survey).") 
     col1, col2 = st.columns(2)
     with col1:
         st.image("static/img/UKCEH.png")
@@ -650,5 +838,6 @@ with st.container(key="app_footer"):
         st.image("static/img/University-of-Lincoln.png")
     st.markdown("Read the preprint: [Habitat Classification from Ground-Level Imagery Using Deep Neural Networks](https://arxiv.org/abs/2507.04017).")
     st.markdown("View the code to this demonstrator app on [GitHub](https://github.com/NERC-CEH/aihab-streamlit-demo)")
+
     if st.button("View Terms and Conditions"):
         licence_dialog()

@@ -2,8 +2,8 @@
 base="light"
 backgroundColor="#fffdf5"
 textColor="#141414"
-primaryColor="slateBlue"
-baseRadius="none"
+primaryColor="#78bf81"
+baseRadius="full"
 font = "Arial, sans-serif"
 
 
