@@ -668,7 +668,12 @@ def render_cached_results():
             image_bytes=cached_bytes,
             image_caption=source_caption,
         )
-        if st.button("Continue to submit observation", key="go_to_submit_tab", type="primary"):
+        if st.button(
+            "Continue to submit observation",
+            key="go_to_submit_tab",
+            type="primary",
+            use_container_width=True,
+        ):
             st.session_state["switch_to_submission_tab"] = True
             st.session_state["tab_switch_nonce"] = st.session_state.get("tab_switch_nonce", 0) + 1
             st.rerun()
@@ -733,8 +738,13 @@ st.markdown(
         text-align: center;
     }
 
+    div.stButton,
     div.stButton > button {
         width: 100%;
+    }
+
+    .st-key-home_actions [data-testid="stHorizontalBlock"] {
+        align-items: stretch;
     }
 
     .st-key-home_actions .stButton > button {
@@ -742,6 +752,17 @@ st.markdown(
         font-weight: 700;
         border-radius: 16px;
         padding: 0.75rem 1rem;
+    }
+
+    @media (max-width: 900px) {
+        .st-key-home_actions [data-testid="stHorizontalBlock"] {
+            flex-direction: column;
+        }
+
+        .st-key-home_actions [data-testid="column"] {
+            width: 100% !important;
+            flex: 1 1 100% !important;
+        }
     }
 
     .st-key-home_actions .stButton > button p {
@@ -804,10 +825,19 @@ def photo_upload_dialog():
 with st.container(key="home_actions"):
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("📷 Take a photo", key="open_camera_modal", type="primary"):
+        if st.button(
+            "📷 Take a photo",
+            key="open_camera_modal",
+            type="primary",
+            use_container_width=True,
+        ):
             open_photo_modal(photo_capture_dialog)
     with col2:
-        if st.button("🖼️ Upload a photo", key="open_upload_modal"):
+        if st.button(
+            "🖼️ Upload a photo",
+            key="open_upload_modal",
+            use_container_width=True,
+        ):
             open_photo_modal(photo_upload_dialog)
 
 render_cached_results()
