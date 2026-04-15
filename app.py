@@ -413,23 +413,49 @@ def extract_top_predictions(predictions, limit=3):
     ]
 
 
+## Resolve habitat description text from loaded UKHab nodes.
+def get_ukhab_definition(habitat_code, ukhab_nodes=None):
+    """Return UKHab definition for a habitat code, or an empty string."""
+    if not ukhab_nodes or habitat_code not in ukhab_nodes:
+        return ""
+    return str(ukhab_nodes[habitat_code].get("definition", "")).strip()
+
+
+## Render one prediction row with confidence, hierarchy, and UKHab description.
+def render_prediction_content(pred, ukhab_nodes=None):
+    """Render the shared prediction UI content for each row."""
+    badge_color = confidence_badge_color(pred["confidence"])
+    st.markdown(
+        f"**{pred['code']} - {pred['name']}** "
+        f":{badge_color}-badge[Confidence: {pred['confidence']:.2%}]"
+    )
+    definition = get_ukhab_definition(pred.get("code"), ukhab_nodes=ukhab_nodes)
+    if definition:
+        st.caption(definition)
+    st.write("" + " > ".join([h["name"] for h in pred["primary_habitat_hierarchy"]]))
+
+
 ## Render the predictions card panel and inference timing.
-def render_predictions_panel(predictions, inference_time_ms, image_bytes=None, image_caption=None):
+def render_predictions_panel(predictions, inference_time_ms, image_bytes=None, image_caption=None, ukhab_nodes=None):
     """Render prediction cards in a dedicated styled panel."""
     with st.container(key="predictions_panel"):
-        #st.write("## Predictions")
-        if image_bytes is not None:
-            st.image(image_bytes, caption=image_caption, width=300)
-        for pred in predictions:
-            title_col, badge_col = st.columns([4, 2])
-            with title_col:
-                st.subheader(f"{pred['code']} - {pred['name']}")
-            with badge_col:
-                st.badge(
-                    f"**Confidence:** {pred['confidence']:.2%}",
-                    color=confidence_badge_color(pred["confidence"]),
-                )
-            st.write("" + " > ".join([h["name"] for h in pred["primary_habitat_hierarchy"]]))
+        for i, pred in enumerate(predictions):
+            # if first prediction add 'top prediction' badge
+            if i == 0:
+                image_col, prediction_col = st.columns([1, 2], vertical_alignment="top")
+                with image_col:
+                    if image_bytes is not None:
+                        st.image(image_bytes, caption=image_caption, use_container_width=True)
+                with prediction_col:
+                    st.badge("🥇 Top prediction", color="blue")
+                    render_prediction_content(pred, ukhab_nodes=ukhab_nodes)
+                continue
+
+            if i == 1:
+                st.markdown("---")
+                st.badge("Other predictions", color="gray")
+
+            render_prediction_content(pred, ukhab_nodes=ukhab_nodes)
         st.caption(f"Inference time: {inference_time_ms/1000} seconds")
 
 
@@ -863,6 +889,7 @@ def render_cached_results():
             data["inference_time_ms"],
             image_bytes=cached_bytes,
             image_caption=source_caption,
+            ukhab_nodes=ukhab_nodes,
         )
         if st.button(
             "Continue to submit observation",
