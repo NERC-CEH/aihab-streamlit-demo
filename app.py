@@ -4,14 +4,17 @@ import requests
 import json
 import os
 import hashlib
+import html
+import re
 from io import BytesIO
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
-from streamlit_js_eval import get_geolocation, streamlit_js_eval
+from streamlit_js_eval import get_geolocation
 import threading
 from huggingface_hub import HfApi
 import folium
 from streamlit_folium import st_folium
+import extra_streamlit_components as stx
 
 # Load environment variables from .env file
 load_dotenv()
@@ -52,112 +55,8 @@ HABITAT_OPTIONS = [
     "s3 - Supra-littoral Sediment",
 ]
 
-CARDINAL_DIRECTION_TO_DEGREES = {
-    "N": 0.0,
-    "NE": 45.0,
-    "E": 90.0,
-    "SE": 135.0,
-    "S": 180.0,
-    "SW": 225.0,
-    "W": 270.0,
-    "NW": 315.0,
-}
-CARDINAL_DIRECTIONS = list(CARDINAL_DIRECTION_TO_DEGREES.keys())
-
-
-## Convert numeric heading to nearest cardinal/intercardinal direction.
-def heading_to_cardinal(heading):
-    """Map heading in degrees to nearest cardinal/intercardinal direction."""
-    if heading is None:
-        return None
-    normalized = ((float(heading) % 360) + 360) % 360
-    idx = int((normalized + 22.5) // 45) % len(CARDINAL_DIRECTIONS)
-    return CARDINAL_DIRECTIONS[idx]
-
-
-## Read compass heading from browser device-orientation APIs.
-def get_compass_heading(measurement_key):
-    """Attempt to read device compass heading in degrees (0-360, where 0 is north)."""
-    js_expression = """
-        (async () => {
-            const normalize = (value) => {
-                if (value === null || value === undefined || Number.isNaN(value)) {
-                    return null;
-                }
-                const n = ((Number(value) % 360) + 360) % 360;
-                return Math.round(n * 10) / 10;
-            };
-
-            const getScreenOrientationAngle = () => {
-                try {
-                    if (typeof screen !== "undefined" && screen.orientation && typeof screen.orientation.angle === "number") {
-                        return screen.orientation.angle;
-                    }
-                    if (typeof window !== "undefined" && typeof window.orientation === "number") {
-                        return window.orientation;
-                    }
-                } catch (_err) {
-                    return 0;
-                }
-                return 0;
-            };
-
-            try {
-                if (typeof window === "undefined" || typeof DeviceOrientationEvent === "undefined") {
-                    return null;
-                }
-
-                const getSingleHeading = () => new Promise((resolve) => {
-                    let settled = false;
-
-                    const finish = (heading) => {
-                        if (settled) {
-                            return;
-                        }
-                        settled = true;
-                        resolve(normalize(heading));
-                    };
-
-                    const handler = (event) => {
-                        const webkitHeading = event.webkitCompassHeading;
-                        const alphaHeading =
-                            event.alpha !== null && event.alpha !== undefined
-                                ? (360 - Number(event.alpha)) + getScreenOrientationAngle()
-                                : null;
-                        const heading =
-                            webkitHeading !== undefined && webkitHeading !== null
-                                ? webkitHeading
-                                : alphaHeading;
-                        finish(heading);
-                    };
-
-                    window.addEventListener("deviceorientationabsolute", handler, { once: true });
-                    window.addEventListener("deviceorientation", handler, { once: true });
-                    setTimeout(() => finish(null), 2000);
-                });
-
-                if (typeof DeviceOrientationEvent.requestPermission === "function") {
-                    const permission = await DeviceOrientationEvent.requestPermission();
-                    if (permission !== "granted") {
-                        return null;
-                    }
-                }
-
-                return await getSingleHeading();
-            } catch (_err) {
-                return null;
-            }
-        })()
-    """
-
-    heading = streamlit_js_eval(
-        js_expressions=js_expression,
-        key=measurement_key,
-    )
-
-    if isinstance(heading, (int, float)):
-        return float(heading)
-    return None
+DEFAULT_MAP_LAT = 54.5
+DEFAULT_MAP_LON = -3.0
 
 
 ## Upload raw bytes to the configured Hugging Face bucket path.
@@ -181,12 +80,15 @@ def reset_for_new_habitat():
     preserved_observer = st.session_state.get("observer_name_saved", "")
     preserved_browser_lat = st.session_state.get("browser_lat")
     preserved_browser_lon = st.session_state.get("browser_lon")
+    preserved_browser_accuracy = st.session_state.get("browser_accuracy")
     new_widget_run = st.session_state.get("widget_run", 0) + 1
     st.session_state.clear()
     st.session_state["observer_name_saved"] = preserved_observer
     if preserved_browser_lat is not None and preserved_browser_lon is not None:
         st.session_state["browser_lat"] = preserved_browser_lat
         st.session_state["browser_lon"] = preserved_browser_lon
+    if preserved_browser_accuracy is not None:
+        st.session_state["browser_accuracy"] = preserved_browser_accuracy
     st.session_state["widget_run"] = new_widget_run
 
 
@@ -205,21 +107,207 @@ def build_image_id(image_file, image_bytes):
 
 ## Safely extract latitude/longitude from geolocation payload.
 def get_location_coords(location):
-    """Extract lat/lon if available from browser geolocation payload."""
+    """Extract lat/lon/accuracy if available from browser geolocation payload."""
     if not location or "coords" not in location:
-        return None, None
-    return location["coords"].get("latitude"), location["coords"].get("longitude")
+        return None, None, None
+    coords = location["coords"]
+    return coords.get("latitude"), coords.get("longitude"), coords.get("accuracy")
 
 
 ## Read and cache browser location for reuse across reruns.
-def sync_browser_location():
+def sync_browser_location(key_hint="default", force_refresh=False):
     """Store the latest successful browser geolocation in session state."""
-    location = get_geolocation()
-    lat, lon = get_location_coords(location)
+    nonce_key = f"geo_request_nonce_{key_hint}"
+    if force_refresh:
+        st.session_state[nonce_key] = st.session_state.get(nonce_key, 0) + 1
+    nonce = st.session_state.get(nonce_key, 0)
+    location = get_geolocation(component_key=f"getLocation_{key_hint}_{nonce}")
+    lat, lon, accuracy = get_location_coords(location)
     if lat is not None and lon is not None:
         st.session_state["browser_lat"] = float(lat)
         st.session_state["browser_lon"] = float(lon)
-    return st.session_state.get("browser_lat"), st.session_state.get("browser_lon")
+    if accuracy is not None:
+        st.session_state["browser_accuracy"] = float(accuracy)
+    return (
+        st.session_state.get("browser_lat"),
+        st.session_state.get("browser_lon"),
+        st.session_state.get("browser_accuracy"),
+    )
+
+
+## Load UKHab taxonomy data for sidebar guidance.
+@st.cache_data
+def load_ukhab_data():
+    """Load UKHab data from the bundled JSON file, or return None on failure."""
+    json_path = "data/ukhab.json"
+    if not os.path.exists(json_path):
+        return None
+    try:
+        with open(json_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+## Build dictionary of taxonomy nodes keyed by habitat id.
+def build_ukhab_nodes(ukhab_data):
+    """Extract non-metadata node records from UKHab JSON."""
+    return {
+        node_id: node
+        for node_id, node in ukhab_data.items()
+        if node_id != "_metadata" and isinstance(node, dict) and node.get("id")
+    }
+
+
+## Identify top-level roots by finding nodes never referenced as children.
+def get_ukhab_roots(nodes):
+    """Return root node ids for rendering the hierarchy."""
+    children = {
+        child_id
+        for node in nodes.values()
+        for child_id in node.get("children", [])
+        if child_id in nodes
+    }
+    roots = [node_id for node_id in nodes if node_id not in children]
+    return sorted(roots, key=lambda nid: (nodes[nid].get("level", 0), nodes[nid].get("name", nid)))
+
+
+## Return whether a single node matches the search query text.
+def ukhab_node_matches_query(node, search_query):
+    """Match query against id/name/definition/inclusions/exclusions fields."""
+    if not search_query:
+        return True
+
+    parts = [
+        str(node.get("id", "")),
+        str(node.get("name", "")),
+        str(node.get("definition", "")),
+    ]
+    parts.extend(str(item) for item in (node.get("inclusions") or []))
+    parts.extend(str(item) for item in (node.get("exclusions") or []))
+    return search_query in " ".join(parts).lower()
+
+
+## Highlight search terms within visible sidebar text.
+def highlight_ukhab_text(text, search_query):
+    """Safely wrap matching query terms in a mark tag for sidebar rendering."""
+    raw_text = str(text or "")
+    if not search_query:
+        return html.escape(raw_text)
+
+    tokens = [token for token in re.split(r"\s+", search_query.strip()) if token]
+    if not tokens:
+        return html.escape(raw_text)
+
+    pattern = re.compile("(" + "|".join(re.escape(token) for token in tokens) + ")", re.IGNORECASE)
+    highlighted_parts = []
+    last_end = 0
+
+    for match in pattern.finditer(raw_text):
+        highlighted_parts.append(html.escape(raw_text[last_end:match.start()]))
+        highlighted_parts.append(f"<mark>{html.escape(match.group(0))}</mark>")
+        last_end = match.end()
+
+    highlighted_parts.append(html.escape(raw_text[last_end:]))
+    return "".join(highlighted_parts)
+
+
+## Return True when node or any descendant matches the search query.
+def ukhab_branch_matches_query(node_id, nodes, search_query, memo, ancestry=None):
+    """Check whether a branch should be shown for the active search query."""
+    if node_id in memo:
+        return memo[node_id]
+    if node_id not in nodes:
+        memo[node_id] = False
+        return False
+
+    ancestry = ancestry or set()
+    if node_id in ancestry:
+        memo[node_id] = False
+        return False
+
+    node = nodes[node_id]
+    if ukhab_node_matches_query(node, search_query):
+        memo[node_id] = True
+        return True
+
+    next_ancestry = set(ancestry)
+    next_ancestry.add(node_id)
+    for child_id in node.get("children", []):
+        if ukhab_branch_matches_query(child_id, nodes, search_query, memo, ancestry=next_ancestry):
+            memo[node_id] = True
+            return True
+
+    memo[node_id] = False
+    return False
+
+
+## Render one taxonomy node and recurse into children in nested expanders.
+def render_ukhab_node(node_id, nodes, search_query="", match_cache=None, ancestry=None):
+    """Render a UKHab node in the sidebar as an expandable section."""
+    if node_id not in nodes:
+        return
+
+    if search_query:
+        match_cache = match_cache or {}
+        if not ukhab_branch_matches_query(node_id, nodes, search_query, match_cache):
+            return
+
+    ancestry = ancestry or set()
+    if node_id in ancestry:
+        return
+
+    node = nodes[node_id]
+    label = f"{node.get('id', node_id)} - {node.get('name', 'Unnamed habitat')}"
+    auto_expand = bool(search_query and ukhab_branch_matches_query(node_id, nodes, search_query, match_cache))
+
+    with st.expander(label, expanded=auto_expand):
+        level = node.get("level")
+        if level is not None:
+            st.caption(f"Level {level}")
+
+        definition = (node.get("definition") or "").strip()
+        if definition:
+            st.markdown(highlight_ukhab_text(definition, search_query), unsafe_allow_html=True)
+
+        inclusions = node.get("inclusions") or []
+        if inclusions:
+            with st.expander("✅ Inclusions", expanded=False):
+                for item in inclusions:
+                    st.markdown(
+                        f"- {highlight_ukhab_text(item, search_query)}",
+                        unsafe_allow_html=True,
+                    )
+
+        exclusions = node.get("exclusions") or []
+        if exclusions:
+            with st.expander("❌ Exclusions", expanded=False):
+                for item in exclusions:
+                    st.markdown(
+                        f"- {highlight_ukhab_text(item, search_query)}",
+                        unsafe_allow_html=True,
+                    )
+
+        children = [child for child in node.get("children", []) if child in nodes]
+        if children:
+            if search_query:
+                children = [
+                    child
+                    for child in children
+                    if ukhab_branch_matches_query(child, nodes, search_query, match_cache)
+                ]
+
+            st.caption("Subtypes")
+            next_ancestry = set(ancestry)
+            next_ancestry.add(node_id)
+            for child_id in children:
+                render_ukhab_node(
+                    child_id,
+                    nodes,
+                    search_query=search_query,
+                    match_cache=match_cache,
+                    ancestry=next_ancestry,
+                )
 
 
 ## Submit image and optional coordinates to prediction API.
@@ -244,11 +332,14 @@ def cache_prediction_state(
     default_submission_datetime,
     captured_lat,
     captured_lon,
-    captured_heading,
+    captured_accuracy,
 ):
     """Persist prediction and submission defaults in session state."""
     resolved_lat = captured_lat if captured_lat is not None else st.session_state.get("browser_lat")
     resolved_lon = captured_lon if captured_lon is not None else st.session_state.get("browser_lon")
+    resolved_accuracy = (
+        captured_accuracy if captured_accuracy is not None else st.session_state.get("browser_accuracy")
+    )
 
     st.session_state["prediction_image_id"] = image_id
     st.session_state["prediction_data"] = data
@@ -259,12 +350,13 @@ def cache_prediction_state(
     st.session_state["submission_time"] = default_submission_datetime.time().replace(second=0, microsecond=0)
     st.session_state["prediction_lat"] = resolved_lat
     st.session_state["prediction_lon"] = resolved_lon
-    st.session_state["prediction_heading"] = captured_heading
-    st.session_state["map_lat"] = float(resolved_lat) if resolved_lat is not None else 0.0
-    st.session_state["map_lon"] = float(resolved_lon) if resolved_lon is not None else 0.0
+    st.session_state["prediction_accuracy"] = resolved_accuracy
     if resolved_lat is not None and resolved_lon is not None:
-        st.session_state["input_lat"] = float(resolved_lat)
-        st.session_state["input_lon"] = float(resolved_lon)
+        st.session_state["map_lat"] = float(resolved_lat)
+        st.session_state["map_lon"] = float(resolved_lon)
+    else:
+        st.session_state["map_lat"] = float(st.session_state.get("map_lat", DEFAULT_MAP_LAT))
+        st.session_state["map_lon"] = float(st.session_state.get("map_lon", DEFAULT_MAP_LON))
     st.session_state["bucket_uploaded_for"] = None
     st.session_state["bucket_uploaded_image_path"] = None
     st.session_state["bucket_uploaded_metadata_path"] = None
@@ -315,9 +407,7 @@ def build_metadata_preview(
     selected_datetime,
     selected_lat,
     selected_lon,
-    selected_heading,
-    selected_direction_value,
-    bearing_source,
+    selected_accuracy,
     observer_name,
     top_3_predictions,
     selected_habitat_code,
@@ -330,9 +420,7 @@ def build_metadata_preview(
         "datetime": selected_datetime.isoformat(),
         "lat": selected_lat,
         "long": selected_lon,
-        "bearing_degrees": selected_heading,
-        "bearing_cardinal": selected_direction_value,
-        "bearing_source": bearing_source,
+        "location_accuracy_m": selected_accuracy,
         "user_name": observer_name,
         "top_3_predictions": top_3_predictions,
         "selected_habitat_code": selected_habitat_code,
@@ -349,7 +437,7 @@ def render_submission_panel(
     cached_bytes,
     prediction_lat,
     prediction_lon,
-    prediction_heading,
+    prediction_accuracy,
 ):
     """Render user submission controls and perform bucket upload on submit."""
     with st.container(key="upload_panel"):
@@ -357,15 +445,24 @@ def render_submission_panel(
         st.info("Your image will be used to evaluate and improve the AI-Hab model. By submitting, you confirm you have permission to upload this image and agree to the Terms and Conditions.")
 
         if "observer_name_saved" not in st.session_state:
-            st.session_state["observer_name_saved"] = ""
+            saved_cookies = cookie_manager.get_all(key="observer_name_cookie_read") or {}
+            st.session_state["observer_name_saved"] = saved_cookies.get("observer_name", "")
 
         observer_name = st.text_input(
-            "Name (will be saved for each new photo you add in this session)",
+            "Observer full name (will be saved for each new photo you add in this session)",
             value=st.session_state.get("observer_name_saved", ""),
             key="observer_name_input",
             help="Set once per session. It will be reused for all uploaded photos.",
         )
-        st.session_state["observer_name_saved"] = observer_name.strip()
+        normalized_observer_name = observer_name.strip()
+        if normalized_observer_name != st.session_state.get("observer_name_saved", ""):
+            st.session_state["observer_name_saved"] = normalized_observer_name
+            cookie_manager.set(
+                "observer_name",
+                normalized_observer_name,
+                expires_at=datetime.now(timezone.utc) + timedelta(days=365),
+                key="observer_name_cookie_write",
+            )
 
         top_3_predictions = extract_top_predictions(predictions)
 
@@ -404,7 +501,6 @@ def render_submission_panel(
                 min_value=-90.0,
                 max_value=90.0,
                 format="%.6f",
-                key="input_lat",
             )
         with lon_col:
             selected_lon = st.number_input(
@@ -413,40 +509,36 @@ def render_submission_panel(
                 min_value=-180.0,
                 max_value=180.0,
                 format="%.6f",
-                key="input_lon",
             )
 
-        # Temporarily disable compass/direction UI and metadata until heading is reliable.
-        # auto_direction = heading_to_cardinal(prediction_heading)
-        # direction_options = ["", *CARDINAL_DIRECTIONS]
-        # default_direction = auto_direction if auto_direction else ""
-        # selected_direction = st.selectbox(
-        #     "Photo direction",
-        #     options=direction_options,
-        #     index=direction_options.index(default_direction),
-        #     help="Direction classes only (N/NE/E/SE/S/SW/W/NW). Auto-filled from compass when available.",
-        # )
-        # selected_direction_value = selected_direction or None
-        # selected_heading = CARDINAL_DIRECTION_TO_DEGREES.get(selected_direction_value)
-        #
-        # if auto_direction:
-        #     st.caption(f"Auto-detected direction from compass: {auto_direction}")
-        #     if selected_direction_value and selected_direction_value != auto_direction:
-        #         bearing_source = "manual_override_cardinal"
-        #     elif selected_direction_value:
-        #         bearing_source = "sensor_translated_cardinal"
-        #     else:
-        #         bearing_source = None
-        # elif selected_direction_value:
-        #     bearing_source = "manual_cardinal"
-        # else:
-        #     st.caption("Compass heading was not available. Please select an approximate direction.")
-        #     bearing_source = None
-        selected_direction_value = None
-        selected_heading = None
-        bearing_source = None
+        # Keep map marker position in sync with any manual coordinate edits.
+        st.session_state["map_lat"] = float(selected_lat)
+        st.session_state["map_lon"] = float(selected_lon)
 
-        st.caption("Click the map to update the location.")
+        map_hint_col, map_refresh_col = st.columns([3, 2])
+        with map_hint_col:
+            st.caption("Click the map to update the location.")
+        with map_refresh_col:
+            if st.button(
+                "Use device location",
+                key=f"refresh_location_{image_id}",
+                use_container_width=True,
+            ):
+                refreshed_lat, refreshed_lon, refreshed_accuracy = sync_browser_location(
+                    key_hint=f"refresh_{image_id}",
+                    force_refresh=True,
+                )
+                if refreshed_lat is not None and refreshed_lon is not None:
+                    st.session_state["prediction_lat"] = float(refreshed_lat)
+                    st.session_state["prediction_lon"] = float(refreshed_lon)
+                    if refreshed_accuracy is not None:
+                        st.session_state["prediction_accuracy"] = float(refreshed_accuracy)
+                    st.session_state["map_lat"] = float(refreshed_lat)
+                    st.session_state["map_lon"] = float(refreshed_lon)
+                    st.rerun()
+                else:
+                    st.warning("Could not retrieve device location. Please check browser permissions.")
+
         _map = folium.Map(
             location=[selected_lat, selected_lon],
             zoom_start=16 if (selected_lat or selected_lon) else 5,
@@ -475,7 +567,21 @@ def render_submission_panel(
             if (clicked_lat, clicked_lng) != (st.session_state.get("map_lat"), st.session_state.get("map_lon")):
                 st.session_state["map_lat"] = clicked_lat
                 st.session_state["map_lon"] = clicked_lng
+                st.session_state["prediction_accuracy"] = None
                 st.rerun()
+
+        browser_lat = st.session_state.get("browser_lat")
+        browser_lon = st.session_state.get("browser_lon")
+        browser_accuracy = st.session_state.get("browser_accuracy")
+        selected_accuracy = st.session_state.get("prediction_accuracy", prediction_accuracy)
+        if browser_lat is not None and browser_lon is not None:
+            if abs(selected_lat - float(browser_lat)) > 1e-8 or abs(selected_lon - float(browser_lon)) > 1e-8:
+                selected_accuracy = None
+
+        if selected_accuracy is not None:
+            st.caption(f"Device geolocation accuracy: +/-{float(selected_accuracy):.1f} m")
+        else:
+            st.caption("Device geolocation accuracy: unavailable for the current location.")
 
         comment = st.text_area("Comment", placeholder="Add an optional note about this habitat image")
         selected_habitat_parts = selected_habitat.split(" - ", 1)
@@ -487,9 +593,7 @@ def render_submission_panel(
             selected_datetime=selected_datetime,
             selected_lat=selected_lat,
             selected_lon=selected_lon,
-            selected_heading=selected_heading,
-            selected_direction_value=selected_direction_value,
-            bearing_source=bearing_source,
+            selected_accuracy=selected_accuracy,
             observer_name=st.session_state.get("observer_name_saved", ""),
             top_3_predictions=top_3_predictions,
             selected_habitat_code=selected_habitat_code,
@@ -510,38 +614,39 @@ def render_submission_panel(
                 st.error("Please enter your user name before uploading.")
                 st.stop()
 
-            hf_token = get_hf_token()
-            if not hf_token:
-                st.error("Missing HF token. Add HF_AUTH_TOKEN to environment variables.")
-            else:
-                try:
-                    upload_stem = os.path.splitext(upload_name)[0]
-                    remote_image_name = f"images/{upload_name}"
-                    remote_metadata_name = f"metadata/{upload_stem}.json"
+            with st.spinner("Uploading image and metadata..."):
+                hf_token = get_hf_token()
+                if not hf_token:
+                    st.error("Missing HF token. Add HF_AUTH_TOKEN to environment variables.")
+                else:
+                    try:
+                        upload_stem = os.path.splitext(upload_name)[0]
+                        remote_image_name = f"images/{upload_name}"
+                        remote_metadata_name = f"metadata/{upload_stem}.json"
 
-                    uploaded_image_path = upload_bytes_to_hf_bucket(
-                        file_bytes=cached_bytes,
-                        filename=remote_image_name,
-                        bucket_id=HF_BUCKET_ID,
-                        bucket_prefix=HF_BUCKET_PREFIX,
-                        token=hf_token,
-                    )
+                        uploaded_image_path = upload_bytes_to_hf_bucket(
+                            file_bytes=cached_bytes,
+                            filename=remote_image_name,
+                            bucket_id=HF_BUCKET_ID,
+                            bucket_prefix=HF_BUCKET_PREFIX,
+                            token=hf_token,
+                        )
 
-                    metadata_bytes = BytesIO(json.dumps(metadata_preview, indent=2).encode("utf-8")).getvalue()
-                    uploaded_metadata_path = upload_bytes_to_hf_bucket(
-                        file_bytes=metadata_bytes,
-                        filename=remote_metadata_name,
-                        bucket_id=HF_BUCKET_ID,
-                        bucket_prefix=HF_BUCKET_PREFIX,
-                        token=hf_token,
-                    )
+                        metadata_bytes = BytesIO(json.dumps(metadata_preview, indent=2).encode("utf-8")).getvalue()
+                        uploaded_metadata_path = upload_bytes_to_hf_bucket(
+                            file_bytes=metadata_bytes,
+                            filename=remote_metadata_name,
+                            bucket_id=HF_BUCKET_ID,
+                            bucket_prefix=HF_BUCKET_PREFIX,
+                            token=hf_token,
+                        )
 
-                    st.session_state["bucket_uploaded_for"] = image_id
-                    st.session_state["bucket_uploaded_image_path"] = uploaded_image_path
-                    st.session_state["bucket_uploaded_metadata_path"] = uploaded_metadata_path
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Failed to upload to Hugging Face bucket: {exc}")
+                        st.session_state["bucket_uploaded_for"] = image_id
+                        st.session_state["bucket_uploaded_image_path"] = uploaded_image_path
+                        st.session_state["bucket_uploaded_metadata_path"] = uploaded_metadata_path
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Failed to upload to Hugging Face bucket: {exc}")
 
 
 ## Render expandable raw API response for diagnostics.
@@ -613,11 +718,7 @@ def render_image_workflow(img, source_caption):
         default_submission_datetime = datetime.now(timezone.utc).replace(second=0, microsecond=0)
         captured_lat = st.session_state.get("browser_lat")
         captured_lon = st.session_state.get("browser_lon")
-        # Temporarily disable compass heading capture.
-        # captured_heading = get_compass_heading(
-        #     measurement_key=f"compass_{st.session_state.get('widget_run', 0)}_{hashlib.sha256(image_bytes).hexdigest()[:10]}"
-        # )
-        captured_heading = None
+        captured_accuracy = st.session_state.get("browser_accuracy")
 
         with st.spinner("Analyzing habitat..."):
             data = request_prediction(upload_name, image_bytes, file_ext, captured_lat, captured_lon)
@@ -630,7 +731,7 @@ def render_image_workflow(img, source_caption):
             default_submission_datetime=default_submission_datetime,
             captured_lat=captured_lat,
             captured_lon=captured_lon,
-            captured_heading=captured_heading,
+            captured_accuracy=captured_accuracy,
         )
 
     data = st.session_state.get("prediction_data")
@@ -651,7 +752,7 @@ def render_cached_results():
     cached_bytes = st.session_state.get("prediction_image_bytes")
     prediction_lat = st.session_state.get("prediction_lat")
     prediction_lon = st.session_state.get("prediction_lon")
-    prediction_heading = st.session_state.get("prediction_heading")
+    prediction_accuracy = st.session_state.get("prediction_accuracy")
     source_caption = st.session_state.get("prediction_source_caption", "Habitat image")
 
     if not data or not image_id or not upload_name or not cached_bytes:
@@ -686,7 +787,7 @@ def render_cached_results():
             cached_bytes=cached_bytes,
             prediction_lat=prediction_lat,
             prediction_lon=prediction_lon,
-            prediction_heading=prediction_heading,
+            prediction_accuracy=prediction_accuracy,
         )
 
     if st.session_state.pop("switch_to_submission_tab", False):
@@ -706,10 +807,50 @@ def start_warmup_thread():
     thread = threading.Thread(target=warmup, daemon=True)
     thread.start()
     return "warmup_started"
+
+
+st.set_page_config(
+    page_title="AI-Hab Identify",
+    page_icon="static/img/ai-hab-logo-transparent.png",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
 start_warmup_thread()
+cookie_manager = stx.CookieManager()
 
+with st.sidebar:
 
-st.set_page_config(page_title="AI-Hab Identify", page_icon="static/img/ai-hab-logo-transparent.png", layout="wide")
+    ukhab_data = load_ukhab_data()
+    st.title("UKHab hierarchy")
+    if not isinstance(ukhab_data, dict) or not ukhab_data:
+        st.warning("UKHab guidance is currently unavailable because the taxonomy JSON file could not be loaded.")
+    else:
+        ukhab_nodes = build_ukhab_nodes(ukhab_data)
+        ukhab_roots = get_ukhab_roots(ukhab_nodes)
+        metadata = ukhab_data.get("_metadata", {})
+
+        st.markdown("Quick reference for UKHab level 3 and 4 habitats. Access the full [UKHab documentation here](https://ukhab.org/).")
+        if metadata.get("version"):
+            st.caption(f"Version {metadata['version']}")
+
+        search_query = st.text_input(
+            "Search UKHab",
+            value="",
+            placeholder="Search by code, name, or definition",
+            key="ukhab_sidebar_search",
+        ).strip().lower()
+        match_cache = {}
+
+        visible_root_count = 0
+        for root_id in ukhab_roots:
+            if search_query and not ukhab_branch_matches_query(root_id, ukhab_nodes, search_query, match_cache):
+                continue
+            visible_root_count += 1
+            render_ukhab_node(root_id, ukhab_nodes, search_query=search_query, match_cache=match_cache)
+
+        if search_query and visible_root_count == 0:
+            st.info("No matching habitats found.")
+
 st.markdown(
     """
     <style>
@@ -785,10 +926,11 @@ st.markdown(
     unsafe_allow_html=True,
 )
 with st.container(key="location_sync"):
-    sync_browser_location()
+    if st.session_state.get("browser_lat") is None or st.session_state.get("browser_lon") is None:
+        sync_browser_location(key_hint="startup")
 
 st.markdown("# AI-Hab *Identify*")
-st.markdown("Identify habitats to UK-Hab Level 3, powered by AI.")
+st.markdown("Identify habitats to UK-Hab, powered by AI.")
 
 @st.dialog("Take a habitat photo")
 def photo_capture_dialog():
