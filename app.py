@@ -7,14 +7,13 @@ import hashlib
 import html
 import re
 from io import BytesIO
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from dotenv import load_dotenv
-from streamlit_js_eval import get_geolocation
+from streamlit_js_eval import get_geolocation, streamlit_js_eval
 import threading
 from huggingface_hub import HfApi
 import folium
 from streamlit_folium import st_folium
-import extra_streamlit_components as stx
 
 # Load environment variables from .env file
 load_dotenv()
@@ -77,13 +76,11 @@ def get_hf_token():
 ## Clear per-capture state while keeping observer name between captures.
 def reset_for_new_habitat():
     """Reset capture/prediction state while preserving user identity."""
-    preserved_observer = st.session_state.get("observer_name_saved", "")
     preserved_browser_lat = st.session_state.get("browser_lat")
     preserved_browser_lon = st.session_state.get("browser_lon")
     preserved_browser_accuracy = st.session_state.get("browser_accuracy")
     new_widget_run = st.session_state.get("widget_run", 0) + 1
     st.session_state.clear()
-    st.session_state["observer_name_saved"] = preserved_observer
     if preserved_browser_lat is not None and preserved_browser_lon is not None:
         st.session_state["browser_lat"] = preserved_browser_lat
         st.session_state["browser_lon"] = preserved_browser_lon
@@ -133,6 +130,41 @@ def sync_browser_location(key_hint="default", force_refresh=False):
         st.session_state.get("browser_lon"),
         st.session_state.get("browser_accuracy"),
     )
+
+
+## Read observer name from localStorage for iframe-safe persistence fallback.
+def get_observer_name_from_local_storage():
+    """Return observer name persisted in browser localStorage.
+
+    Returns None if the JS hasn't resolved yet (first render), an empty
+    string if localStorage has no value, or the stored name string.
+    """
+    try:
+        stored_name = streamlit_js_eval(
+            js_expressions="window.localStorage.getItem('observer_name') || ''",
+            key="observer_name_local_storage_read",
+        )
+    except Exception:
+        return ""
+
+    if stored_name is None:
+        # JS result not available yet on this render pass.
+        return None
+    return str(stored_name).strip()
+
+
+## Persist observer name to localStorage.
+def set_observer_name_to_local_storage(observer_name):
+    """Store observer name in browser localStorage."""
+    safe_name = json.dumps(observer_name)
+    try:
+        streamlit_js_eval(
+            js_expressions=f"window.localStorage.setItem('observer_name', {safe_name}); true;",
+            key=f"observer_name_local_storage_write_{hashlib.sha1(observer_name.encode('utf-8')).hexdigest()[:10]}",
+        )
+    except Exception:
+        # localStorage can fail in strict privacy modes; ignore and keep session value.
+        pass
 
 
 ## Load UKHab taxonomy data for sidebar guidance.
@@ -455,25 +487,26 @@ def render_submission_panel(
         #st.write("### What habitat did you observe?")
         st.info("Your image will be used to evaluate and improve the AI-Hab model. By submitting, you confirm you have permission to upload this image and agree to the Terms and Conditions.")
 
-        if "observer_name_saved" not in st.session_state:
-            saved_cookies = cookie_manager.get_all(key="observer_name_cookie_read") or {}
-            st.session_state["observer_name_saved"] = saved_cookies.get("observer_name", "")
+        ls_name = get_observer_name_from_local_storage()
+        # ls_name is None on the first render pass (JS not yet resolved).
+        # Do NOT call st.rerun() here — it causes a visible freeze after the modal
+        # closes because it triggers a second full rerender in quick succession.
+        # Instead seed the widget from localStorage, falling back to "" until it
+        # resolves, then let the next natural rerun populate the real value.
+        if "observer_name_input" not in st.session_state:
+            st.session_state["observer_name_input"] = ls_name if ls_name is not None else ""
+        elif ls_name and not st.session_state["observer_name_input"]:
+            # localStorage resolved on a later pass and the field is still blank.
+            st.session_state["observer_name_input"] = ls_name
 
         observer_name = st.text_input(
             "Observer full name (will be saved for each new photo you add in this session)",
-            value=st.session_state.get("observer_name_saved", ""),
             key="observer_name_input",
-            help="Set once per session. It will be reused for all uploaded photos.",
+            help="Set once per session. It will be reused for all subsequent observations.",
         )
         normalized_observer_name = observer_name.strip()
-        if normalized_observer_name != st.session_state.get("observer_name_saved", ""):
-            st.session_state["observer_name_saved"] = normalized_observer_name
-            cookie_manager.set(
-                "observer_name",
-                normalized_observer_name,
-                expires_at=datetime.now(timezone.utc) + timedelta(days=365),
-                key="observer_name_cookie_write",
-            )
+        if normalized_observer_name != (ls_name or ""):
+            set_observer_name_to_local_storage(normalized_observer_name)
 
         top_3_predictions = extract_top_predictions(predictions)
 
@@ -538,7 +571,7 @@ def render_submission_panel(
 
         ai_disagreement_reason = None
 
-        comment = st.text_area("Comment", placeholder="Add an optional note about this habitat image")
+        comment = st.text_area("Comment", placeholder="Add an optional note about this habitat observation")
 
         st.write("---")
 
@@ -651,7 +684,7 @@ def render_submission_panel(
             selected_lat=selected_lat,
             selected_lon=selected_lon,
             selected_accuracy=selected_accuracy,
-            observer_name=st.session_state.get("observer_name_saved", ""),
+            observer_name=normalized_observer_name,
             top_3_predictions=top_3_predictions,
             selected_habitat_code=selected_habitat_code,
             selected_habitat_name=selected_habitat_name,
@@ -667,12 +700,12 @@ def render_submission_panel(
 
         already_uploaded = st.session_state.get("bucket_uploaded_for") == image_id
         if already_uploaded:
-            st.success("Image uploaded successfully")
+            st.success("Observation submitted successfully. Thank you for your contribution! ")
             if st.button("Identify a new habitat", type="primary"):
                 reset_for_new_habitat()
                 st.rerun()
-        elif st.button("Upload image", type="primary"):
-            if not st.session_state.get("observer_name_saved", ""):
+        elif st.button("Submit observation", type="primary"):
+            if not normalized_observer_name:
                 st.error("Please enter your user name before uploading.")
                 st.stop()
 
@@ -879,7 +912,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 start_warmup_thread()
-cookie_manager = stx.CookieManager()
 
 # Load UKHab data at module scope so it's accessible throughout the app
 ukhab_data = load_ukhab_data()
