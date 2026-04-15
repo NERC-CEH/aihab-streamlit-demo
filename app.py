@@ -412,6 +412,8 @@ def build_metadata_preview(
     top_3_predictions,
     selected_habitat_code,
     selected_habitat_name,
+    selected_habitat_level_4_code,
+    selected_habitat_level_4_name,
     comment,
 ):
     """Build metadata document uploaded with each submitted image."""
@@ -425,6 +427,8 @@ def build_metadata_preview(
         "top_3_predictions": top_3_predictions,
         "selected_habitat_code": selected_habitat_code,
         "selected_habitat_name": selected_habitat_name,
+        "selected_habitat_level_4_code": selected_habitat_level_4_code,
+        "selected_habitat_level_4_name": selected_habitat_level_4_name,
         "comment": comment,
     }
 
@@ -438,6 +442,7 @@ def render_submission_panel(
     prediction_lat,
     prediction_lon,
     prediction_accuracy,
+    ukhab_nodes=None,
 ):
     """Render user submission controls and perform bucket upload on submit."""
     with st.container(key="upload_panel"):
@@ -481,6 +486,40 @@ def render_submission_panel(
             st.caption("👍 Your current selection agrees with the AI's top prediction.")
         else:
             st.caption("Your current selection differs from the AI's top prediction.")
+
+        # Extract Level 3 code for Level 4 lookup
+        selected_habitat_parts = selected_habitat.split(" - ", 1)
+        selected_habitat_code_l3 = selected_habitat_parts[0]
+        selected_habitat_level_4_code = None
+        selected_habitat_level_4_name = None
+
+        # Optional Level 4 subspecification (only if UKHab data available)
+        if ukhab_nodes and selected_habitat_code_l3 in ukhab_nodes:
+            level_3_node = ukhab_nodes[selected_habitat_code_l3]
+            level_4_children = level_3_node.get("children", [])
+            # Filter to only Level 4 nodes
+            level_4_options = [
+                child_id for child_id in level_4_children
+                if child_id in ukhab_nodes and ukhab_nodes[child_id].get("level") == 4
+            ]
+            if level_4_options:
+                # Build display labels for Level 4 options
+                level_4_labels = {}
+                for child_id in level_4_options:
+                    child_node = ukhab_nodes[child_id]
+                    label = f"{child_id} - {child_node.get('name', 'Unknown')}"
+                    level_4_labels[label] = child_id
+
+                level_4_selected = st.selectbox(
+                    "Refine to Level 4 (optional)",
+                    options=["(None)"] + list(level_4_labels.keys()),
+                    index=0,
+                    help="For confident users: optional more specific habitat classification.",
+                    key=f"level_4_select_{image_id}",
+                )
+                if level_4_selected != "(None)":
+                    selected_habitat_level_4_code = level_4_labels[level_4_selected]
+                    selected_habitat_level_4_name = ukhab_nodes[selected_habitat_level_4_code].get("name", "")
 
         selected_date = st.date_input(
             "Observation date",
@@ -584,8 +623,7 @@ def render_submission_panel(
             st.caption("Device geolocation accuracy: unavailable for the current location.")
 
         comment = st.text_area("Comment", placeholder="Add an optional note about this habitat image")
-        selected_habitat_parts = selected_habitat.split(" - ", 1)
-        selected_habitat_code = selected_habitat_parts[0]
+        selected_habitat_code = selected_habitat_code_l3
         selected_habitat_name = selected_habitat_parts[1] if len(selected_habitat_parts) > 1 else ""
 
         metadata_preview = build_metadata_preview(
@@ -598,6 +636,8 @@ def render_submission_panel(
             top_3_predictions=top_3_predictions,
             selected_habitat_code=selected_habitat_code,
             selected_habitat_name=selected_habitat_name,
+            selected_habitat_level_4_code=selected_habitat_level_4_code,
+            selected_habitat_level_4_name=selected_habitat_level_4_name,
             comment=comment,
         )
 
@@ -788,6 +828,7 @@ def render_cached_results():
             prediction_lat=prediction_lat,
             prediction_lon=prediction_lon,
             prediction_accuracy=prediction_accuracy,
+            ukhab_nodes=ukhab_nodes,
         )
 
     if st.session_state.pop("switch_to_submission_tab", False):
@@ -818,14 +859,18 @@ st.set_page_config(
 start_warmup_thread()
 cookie_manager = stx.CookieManager()
 
+# Load UKHab data at module scope so it's accessible throughout the app
+ukhab_data = load_ukhab_data()
+ukhab_nodes = None
+if isinstance(ukhab_data, dict) and ukhab_data:
+    ukhab_nodes = build_ukhab_nodes(ukhab_data)
+
 with st.sidebar:
 
-    ukhab_data = load_ukhab_data()
     st.title("UKHab hierarchy")
     if not isinstance(ukhab_data, dict) or not ukhab_data:
         st.warning("UKHab guidance is currently unavailable because the taxonomy JSON file could not be loaded.")
     else:
-        ukhab_nodes = build_ukhab_nodes(ukhab_data)
         ukhab_roots = get_ukhab_roots(ukhab_nodes)
         metadata = ukhab_data.get("_metadata", {})
 
