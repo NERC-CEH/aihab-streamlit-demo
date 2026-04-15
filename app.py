@@ -33,26 +33,26 @@ headers = {
 HF_BUCKET_ID = "aihab-uk/habitatimages"
 HF_BUCKET_PREFIX = os.getenv("HF_BUCKET_PREFIX", "")
 HABITAT_OPTIONS = [
-    "u1 - Urban",
-    "w1 - Broadleaved Mixed and Yew Woodland",
+    "u1 - Built-up areas and gardens",
+    "w1 - Broadleaved and mixed woodland",
     "w2 - Coniferous Woodland",
     "sea - Sea",
     "c1 - Arable and Horticulture",
-    "g4 - Improved Grassland",
+    "g4 - Modified Grassland",
     "g3 - Neutral Grassland",
     "g2 - Calcareous Grassland",
     "g1 - Acid Grassland",
     "g1c - Bracken",
     "h1 - Dwarf Shrub Heath",
-    "f2 - Fen, Marsh, Swamp",
+    "f2 - Fen marsh and swamp",
     "f1 - Bog",
     "t1 - Littoral Rock",
     "t2 - Littoral Sediment",
     "montane - Montane",
     "r1 - Standing Open Waters and Canals",
     "s1 - Inland Rock",
-    "s2 - Supra-littoral Rock",
-    "s3 - Supra-littoral Sediment",
+    "s2 - Supralittoral Rock",
+    "s3 - Supralittoral Sediment",
 ]
 
 DEFAULT_MAP_LAT = 54.5
@@ -414,6 +414,9 @@ def build_metadata_preview(
     selected_habitat_name,
     selected_habitat_level_4_code,
     selected_habitat_level_4_name,
+    participant_confidence,
+    ai_label_agreement,
+    ai_disagreement_reason,
     comment,
 ):
     """Build metadata document uploaded with each submitted image."""
@@ -429,6 +432,9 @@ def build_metadata_preview(
         "selected_habitat_name": selected_habitat_name,
         "selected_habitat_level_4_code": selected_habitat_level_4_code,
         "selected_habitat_level_4_name": selected_habitat_level_4_name,
+        "participant_confidence": participant_confidence,
+        "ai_label_agreement": ai_label_agreement,
+        "ai_disagreement_reason": ai_disagreement_reason,
         "comment": comment,
     }
 
@@ -446,7 +452,7 @@ def render_submission_panel(
 ):
     """Render user submission controls and perform bucket upload on submit."""
     with st.container(key="upload_panel"):
-        #st.write("## Submit observation")
+        #st.write("### What habitat did you observe?")
         st.info("Your image will be used to evaluate and improve the AI-Hab model. By submitting, you confirm you have permission to upload this image and agree to the Terms and Conditions.")
 
         if "observer_name_saved" not in st.session_state:
@@ -477,12 +483,13 @@ def render_submission_panel(
             habitat_options.insert(0, default_habitat)
 
         selected_habitat = st.selectbox(
-            "Select habitat label",
+            "Select habitat label (UKHab level 3)",
             options=habitat_options,
             index=habitat_options.index(default_habitat),
             help="Defaults to the top AI prediction. You can choose another habitat from the full list.",
         )
-        if selected_habitat == default_habitat:
+        ai_label_agreement = selected_habitat == default_habitat
+        if ai_label_agreement:
             st.caption("👍 Your current selection agrees with the AI's top prediction.")
         else:
             st.caption("Your current selection differs from the AI's top prediction.")
@@ -511,7 +518,7 @@ def render_submission_panel(
                     level_4_labels[label] = child_id
 
                 level_4_selected = st.selectbox(
-                    "Refine to Level 4 (optional)",
+                    "Refine to UKHab level 4 (optional)",
                     options=["(None)"] + list(level_4_labels.keys()),
                     index=0,
                     help="For confident users: optional more specific habitat classification.",
@@ -520,6 +527,20 @@ def render_submission_panel(
                 if level_4_selected != "(None)":
                     selected_habitat_level_4_code = level_4_labels[level_4_selected]
                     selected_habitat_level_4_name = ukhab_nodes[selected_habitat_level_4_code].get("name", "")
+
+        participant_confidence = st.select_slider(
+            "How confident are you in your selected habitat label?",
+            options=[1, 2, 3, 4, 5],
+            value=3,
+            key=f"participant_confidence_{image_id}",
+            help="1 = not confident, 5 = very confident.",
+        )
+
+        ai_disagreement_reason = None
+
+        comment = st.text_area("Comment", placeholder="Add an optional note about this habitat image")
+
+        st.write("---")
 
         selected_date = st.date_input(
             "Observation date",
@@ -621,8 +642,6 @@ def render_submission_panel(
             st.caption(f"Device geolocation accuracy: +/-{float(selected_accuracy):.1f} m")
         else:
             st.caption("Device geolocation accuracy: unavailable for the current location.")
-
-        comment = st.text_area("Comment", placeholder="Add an optional note about this habitat image")
         selected_habitat_code = selected_habitat_code_l3
         selected_habitat_name = selected_habitat_parts[1] if len(selected_habitat_parts) > 1 else ""
 
@@ -638,6 +657,9 @@ def render_submission_panel(
             selected_habitat_name=selected_habitat_name,
             selected_habitat_level_4_code=selected_habitat_level_4_code,
             selected_habitat_level_4_name=selected_habitat_level_4_name,
+            participant_confidence=participant_confidence,
+            ai_label_agreement=ai_label_agreement,
+            ai_disagreement_reason=ai_disagreement_reason,
             comment=comment,
         )
 
