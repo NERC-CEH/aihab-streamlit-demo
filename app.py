@@ -1134,7 +1134,7 @@ with st.container(key="app_footer"):
         st.image("static/img/UKCEH.png")
     with col2:
         st.image("static/img/University-of-Lincoln.png")
-    st.markdown("Read the preprint: [Habitat Classification from Ground-Level Imagery Using Deep Neural Networks](https://arxiv.org/abs/2507.04017).")
+    st.markdown("Read the paper: [Habitat Classification from Ground-Level Imagery Using Deep Neural Networks](https://doi.org/10.1016/j.ecoinf.2026.103751).")
     st.markdown("View the code to this demonstrator app on [GitHub](https://github.com/NERC-CEH/aihab-streamlit-demo)")
 
     if st.button("View Terms and Conditions"):
