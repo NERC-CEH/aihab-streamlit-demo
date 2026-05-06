@@ -57,6 +57,13 @@ HABITAT_OPTIONS = [
 DEFAULT_MAP_LAT = 54.5
 DEFAULT_MAP_LON = -3.0
 
+FIRST_TIME_STEPS = [
+    "Choose how to add a habitat image: take a photo or upload one from your device.",
+    "Allow camera or location access if your browser asks. Location is optional and can be edited later.",
+    "Review the AI prediction, then confirm or correct the habitat label.",
+    "Submit the observation once you are happy with the details.",
+]
+
 
 ## Upload raw bytes to the configured Hugging Face bucket path.
 def upload_bytes_to_hf_bucket(file_bytes, filename, bucket_id, bucket_prefix="", token=None):
@@ -459,6 +466,8 @@ def render_predictions_panel(predictions, inference_time_ms, image_bytes=None, i
         st.caption(f"Inference time: {inference_time_ms/1000} seconds")
 
 
+
+
 ## Construct metadata JSON object for bucket upload.
 def build_metadata_preview(
     upload_name,
@@ -510,8 +519,10 @@ def render_submission_panel(
 ):
     """Render user submission controls and perform bucket upload on submit."""
     with st.container(key="upload_panel"):
-        #st.write("### What habitat did you observe?")
-        st.info("Your image will be used to evaluate and improve the AI-Hab model. By submitting, you confirm you have permission to upload this image and agree to the Terms and Conditions.")
+        st.info(
+            "Review the details below, then submit your observation. Your image helps evaluate and improve the AI-Hab model. "
+            "Only submit images that you have permission to upload."
+        )
 
         ls_name = get_observer_name_from_local_storage()
         # ls_name is None on the first render pass (JS not yet resolved).
@@ -526,9 +537,9 @@ def render_submission_panel(
             st.session_state["observer_name_input"] = ls_name
 
         observer_name = st.text_input(
-            "Observer full name (will be saved for each new photo you add in this session)",
+            "Your full name",
             key="observer_name_input",
-            help="Set once per session. It will be reused for all subsequent observations.",
+            help="Saved in your browser and reused for your next observations on this device.",
         )
         normalized_observer_name = observer_name.strip()
         if normalized_observer_name != (ls_name or ""):
@@ -542,10 +553,10 @@ def render_submission_panel(
             habitat_options.insert(0, default_habitat)
 
         selected_habitat = st.selectbox(
-            "Select habitat label (UKHab level 3)",
+            "Choose the habitat label that best matches the photo",
             options=habitat_options,
             index=habitat_options.index(default_habitat),
-            help="Defaults to the top AI prediction. You can choose another habitat from the full list.",
+            help="Starts with the top AI prediction. Change it if another UKHab level 3 label fits better.",
         )
         ai_label_agreement = selected_habitat == default_habitat
         if ai_label_agreement:
@@ -588,16 +599,16 @@ def render_submission_panel(
                     selected_habitat_level_4_name = ukhab_nodes[selected_habitat_level_4_code].get("name", "")
 
         participant_confidence = st.select_slider(
-            "How confident are you in your selected habitat label?",
-            options=[1, 2, 3, 4, 5],
-            value=3,
+            "How confident are you in that habitat label?",
+            options=["Not confident", "Somewhat confident", "Very confident"],
+            value="Somewhat confident",
             key=f"participant_confidence_{image_id}",
-            help="1 = not confident, 5 = very confident.",
+            help="Choose the option that best reflects how sure you are about the habitat label.",
         )
 
         ai_disagreement_reason = None
 
-        comment = st.text_area("Comment", placeholder="Add an optional note about this habitat observation")
+        comment = st.text_area("Notes (optional)", placeholder="Add anything useful about the habitat or the photo")
 
         st.write("---")
 
@@ -732,7 +743,7 @@ def render_submission_panel(
                 st.rerun()
         elif st.button("Submit observation", type="primary"):
             if not normalized_observer_name:
-                st.error("Please enter your user name before uploading.")
+                st.error("Please enter your name before submitting.")
                 st.stop()
 
             with st.spinner("Uploading image and metadata..."):
@@ -948,7 +959,16 @@ if isinstance(ukhab_data, dict) and ukhab_data:
 
 with st.sidebar:
 
+    
+    
+    # Getting started help section
+    with st.expander("📖 Getting Started", expanded=False):
+        st.write("New to AI-Hab? Follow these steps for your first observation.")
+        for index, step in enumerate(FIRST_TIME_STEPS, start=1):
+            st.markdown(f"**{index}.** {step}")
+    
     st.title("UKHab hierarchy")
+
     if not isinstance(ukhab_data, dict) or not ukhab_data:
         st.warning("UKHab guidance is currently unavailable because the taxonomy JSON file could not be loaded.")
     else:

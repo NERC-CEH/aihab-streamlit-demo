@@ -70,6 +70,17 @@ streamlit run app.py
 
 The app will open in your browser at `http://localhost:8501`.
 
+## First-Time Use
+
+For a smooth first run:
+
+1. Open the app in a modern browser such as Chrome or Edge.
+2. Choose **Take a photo** or **Upload a photo** on the home screen.
+3. If your browser asks for camera or location access, allow it if you want to use those features. Location is optional and can be edited manually before submission.
+4. Review the AI prediction, then confirm or correct the habitat label before submitting.
+
+If the app starts but predictions fail, check that `API_URL`, `API_KEY`, and `HF_AUTH_TOKEN` are all set correctly in your environment.
+
 ## Environment Variables
 
 * `API_KEY`: Your API key for authenticating with the API.
@@ -110,3 +121,13 @@ In that case, UKHab sidebar guidance, level-4 refinement options, and prediction
 ├── .env                  # Environment variables (not committed)
 └── requirements.txt      # Python dependencies
 ```
+
+## Troubleshooting
+
+If you see import errors when starting the app, reinstall dependencies with:
+
+```bash
+pip install -r requirements.txt
+```
+
+If the camera or location does not work, check your browser site permissions and refresh the page.
