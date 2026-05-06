@@ -182,7 +182,7 @@ def set_observer_name_to_local_storage(observer_name):
 @st.cache_data
 def load_ukhab_data():
     """Load UKHab data from the bundled JSON file, or return None on failure."""
-    json_path = "data/ukhab.json"
+    json_path = "/data/ukhab.json" if os.path.exists("/data/ukhab.json") else "data/ukhab.json"
     if not os.path.exists(json_path):
         logger.error(
             "UKHab taxonomy file not found at %s (cwd=%s)",
