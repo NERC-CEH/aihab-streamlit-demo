@@ -481,7 +481,8 @@ def build_metadata_preview(
     selected_habitat_name,
     selected_habitat_level_4_code,
     selected_habitat_level_4_name,
-    participant_confidence,
+    participant_confidence_level_3,
+    participant_confidence_level_4,
     ai_label_agreement,
     ai_disagreement_reason,
     comment,
@@ -499,7 +500,8 @@ def build_metadata_preview(
         "selected_habitat_name": selected_habitat_name,
         "selected_habitat_level_4_code": selected_habitat_level_4_code,
         "selected_habitat_level_4_name": selected_habitat_level_4_name,
-        "participant_confidence": participant_confidence,
+        "participant_confidence_level_3": participant_confidence_level_3,
+        "participant_confidence_level_4": participant_confidence_level_4,
         "ai_label_agreement": ai_label_agreement,
         "ai_disagreement_reason": ai_disagreement_reason,
         "comment": comment,
@@ -569,9 +571,18 @@ def render_submission_panel(
         selected_habitat_code_l3 = selected_habitat_parts[0]
         selected_habitat_level_4_code = None
         selected_habitat_level_4_name = None
+        participant_confidence_level_4 = None
 
-        # Optional Level 4 subspecification (only if UKHab data available)
-        if ukhab_nodes and selected_habitat_code_l3 in ukhab_nodes:
+        participant_confidence = st.select_slider(
+            "How confident are you in the level 3 habitat label?",
+            options=["Not confident", "Somewhat confident", "Very confident"],
+            value="Somewhat confident",
+            key=f"participant_confidence_{image_id}",
+            help="Choose the option that best reflects how sure you are about the habitat label.",
+        )
+
+        # Optional Level 4 subspecification (only for confident users and if UKHab data available)
+        if participant_confidence == "Very confident" and ukhab_nodes and selected_habitat_code_l3 in ukhab_nodes:
             level_3_node = ukhab_nodes[selected_habitat_code_l3]
             level_4_children = level_3_node.get("children", [])
             # Filter to only Level 4 nodes
@@ -591,20 +602,21 @@ def render_submission_panel(
                     "Refine to UKHab level 4 (optional)",
                     options=["(None)"] + list(level_4_labels.keys()),
                     index=0,
-                    help="For confident users: optional more specific habitat classification.",
+                    help="Specify a more detailed habitat classification.",
                     key=f"level_4_select_{image_id}",
                 )
                 if level_4_selected != "(None)":
                     selected_habitat_level_4_code = level_4_labels[level_4_selected]
                     selected_habitat_level_4_name = ukhab_nodes[selected_habitat_level_4_code].get("name", "")
-
-        participant_confidence = st.select_slider(
-            "How confident are you in that habitat label?",
-            options=["Not confident", "Somewhat confident", "Very confident"],
-            value="Somewhat confident",
-            key=f"participant_confidence_{image_id}",
-            help="Choose the option that best reflects how sure you are about the habitat label.",
-        )
+                    
+                    # Show confidence slider for Level 4 only if it's selected
+                    participant_confidence_level_4 = st.select_slider(
+                        "How confident are you in the level 4 classification?",
+                        options=["Not confident", "Somewhat confident", "Very confident"],
+                        value="Somewhat confident",
+                        key=f"participant_confidence_level_4_{image_id}",
+                        help="Rate your confidence in the more specific level 4 habitat classification.",
+                    )
 
         ai_disagreement_reason = None
 
@@ -727,7 +739,8 @@ def render_submission_panel(
             selected_habitat_name=selected_habitat_name,
             selected_habitat_level_4_code=selected_habitat_level_4_code,
             selected_habitat_level_4_name=selected_habitat_level_4_name,
-            participant_confidence=participant_confidence,
+            participant_confidence_level_3=participant_confidence,
+            participant_confidence_level_4=participant_confidence_level_4,
             ai_label_agreement=ai_label_agreement,
             ai_disagreement_reason=ai_disagreement_reason,
             comment=comment,
