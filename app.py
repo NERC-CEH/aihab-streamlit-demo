@@ -6,6 +6,7 @@ import os
 import hashlib
 import html
 import re
+import logging
 from io import BytesIO
 from datetime import datetime, timezone
 from dotenv import load_dotenv
@@ -14,6 +15,9 @@ import threading
 from huggingface_hub import HfApi
 import folium
 from streamlit_folium import st_folium
+
+
+logger = logging.getLogger(__name__)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -180,11 +184,20 @@ def load_ukhab_data():
     """Load UKHab data from the bundled JSON file, or return None on failure."""
     json_path = "data/ukhab.json"
     if not os.path.exists(json_path):
+        logger.error(
+            "UKHab taxonomy file not found at %s (cwd=%s)",
+            os.path.abspath(json_path),
+            os.getcwd(),
+        )
         return None
     try:
         with open(json_path, "r", encoding="utf-8") as f:
             return json.load(f)
-    except (json.JSONDecodeError, OSError):
+    except json.JSONDecodeError:
+        logger.exception("Failed to parse UKHab taxonomy JSON at %s", os.path.abspath(json_path))
+        return None
+    except OSError:
+        logger.exception("Failed to read UKHab taxonomy JSON at %s", os.path.abspath(json_path))
         return None
 
 
@@ -983,6 +996,12 @@ with st.sidebar:
     st.title("UKHab hierarchy")
 
     if not isinstance(ukhab_data, dict) or not ukhab_data:
+        if not st.session_state.get("ukhab_guidance_unavailable_logged", False):
+            logger.warning(
+                "UKHab guidance unavailable in sidebar because taxonomy data is missing or invalid (type=%s).",
+                type(ukhab_data).__name__,
+            )
+            st.session_state["ukhab_guidance_unavailable_logged"] = True
         st.warning("UKHab guidance is currently unavailable because the taxonomy JSON file could not be loaded.")
     else:
         ukhab_roots = get_ukhab_roots(ukhab_nodes)
