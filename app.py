@@ -362,17 +362,38 @@ def render_ukhab_node(node_id, nodes, search_query="", match_cache=None, ancestr
                 )
 
 
+## Normalize prediction response for backwards compatibility.
+def normalize_prediction_response(resp_json):
+    """Convert new multi-image API responses into the legacy single-image format."""
+    if not isinstance(resp_json, dict):
+        return resp_json
+
+    if "results" in resp_json:
+        return resp_json
+
+    images = resp_json.get("images")
+    if isinstance(images, list) and images:
+        first_image = images[0]
+        if isinstance(first_image, dict) and "results" in first_image:
+            normalized = dict(resp_json)
+            normalized["results"] = first_image["results"]
+            return normalized
+
+    return resp_json
+
+
 ## Submit image and optional coordinates to prediction API.
 def request_prediction(upload_name, image_bytes, file_ext, captured_lat, captured_lon):
     """Call prediction API and return parsed JSON response."""
     content_type = "image/png" if file_ext == ".png" else "image/jpeg"
-    files = {"file": (upload_name, image_bytes, content_type)}
+    files = [("image_files", (upload_name, image_bytes, content_type))]
     params = {"top_n": 3}
     if captured_lat is not None and captured_lon is not None:
         params.update({"latitude": captured_lat, "longitude": captured_lon})
 
     resp = requests.post(url, headers=headers, params=params, files=files)
-    return resp.json()
+    resp.raise_for_status()
+    return normalize_prediction_response(resp.json())
 
 
 ## Persist prediction payload and default submission values in session state.
