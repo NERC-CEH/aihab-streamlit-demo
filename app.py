@@ -29,7 +29,7 @@ url = f"{base_url}/predict"  # Adjust if upload endpoint is different
 warm_up_url = f"{base_url}/warmup"
 
 headers = {
-    "Authorization": f"Key {api_key}",
+    "Authorization": f"Bearer {api_key}",
     "accept": "application/json"
 }
 
