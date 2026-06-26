@@ -5,3 +5,4 @@ streamlit_js_eval
 huggingface_hub>=1.7.1
 streamlit-folium
 folium
+gradio_client

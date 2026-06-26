@@ -15,6 +15,9 @@ import threading
 from huggingface_hub import HfApi
 import folium
 from streamlit_folium import st_folium
+from gradio_client import Client, handle_file
+import tempfile
+from concurrent.futures import ThreadPoolExecutor
 
 
 logger = logging.getLogger(__name__)
@@ -27,6 +30,13 @@ api_key = os.getenv("API_KEY",None)
 base_url = os.getenv("API_URL",None)
 url = f"{base_url}/predict"  # Adjust if upload endpoint is different
 warm_up_url = f"{base_url}/warmup"
+
+@st.cache_resource
+def get_quality_client():
+    return Client(
+        "https://aihab-uk-habitat-image-quality.hf.space/"
+    )
+quality_client = get_quality_client()
 
 headers = {
     "Authorization": f"Bearer {api_key}",
@@ -477,9 +487,19 @@ def render_prediction_content(pred, ukhab_nodes=None):
 
 
 ## Render the predictions card panel and inference timing.
-def render_predictions_panel(predictions, inference_time_ms, image_bytes=None, image_caption=None, ukhab_nodes=None):
+def render_predictions_panel(predictions, inference_time_ms, quality_data, image_bytes=None, image_caption=None, ukhab_nodes=None):
     """Render prediction cards in a dedicated styled panel."""
     with st.container(key="predictions_panel"):
+        if quality_data:
+            if quality_data.get("suitable", False):
+                st.success("✅ Image passed quality checks")
+            else:
+                recommendations = quality_data.get("recommendation", [])
+                st.warning(
+                    "⚠️ Image quality issues detected\n\n" +
+                    "\n".join(f"• {r}" for r in recommendations)
+                )
+
         for i, pred in enumerate(predictions):
             # if first prediction add 'top prediction' badge
             if i == 0:
@@ -540,6 +560,35 @@ def build_metadata_preview(
         "ai_disagreement_reason": ai_disagreement_reason,
         "comment": comment,
     }
+
+# ## Call the Habitat Image Quality Space.
+def request_image_quality(image_bytes):
+    try:
+        with tempfile.NamedTemporaryFile(
+            suffix=".jpg",
+            delete=False
+        ) as tmp:
+            tmp.write(image_bytes)
+            tmp_path = tmp.name
+
+        result = quality_client.predict(
+            image=handle_file(tmp_path),
+            api_name="/assess_image"
+        )
+
+        os.remove(tmp_path)
+        return result
+
+
+    except Exception as e:
+        logger.warning(f"Quality check failed: {e}")
+
+        return {
+            "suitable": False,
+            "issues": ["Image quality assessment failed."],
+            "recommendation": ["Image quality assessment failed."],
+            "error": str(e)
+        }
 
 
 ## Render upload form and handle final image/metadata submission.
@@ -888,6 +937,7 @@ def render_image_workflow(img, source_caption):
         return
 
     image_bytes = img.getvalue()
+
     file_ext = get_image_file_ext(img)
     image_id = build_image_id(img, image_bytes)
 
@@ -900,7 +950,26 @@ def render_image_workflow(img, source_caption):
         captured_accuracy = st.session_state.get("browser_accuracy")
 
         with st.spinner("Analyzing habitat..."):
-            data = request_prediction(upload_name, image_bytes, file_ext, captured_lat, captured_lon)
+            with ThreadPoolExecutor(max_workers=2) as executor:
+
+                    habitat_future = executor.submit(
+                        request_prediction,
+                        upload_name,
+                        image_bytes,
+                        file_ext,
+                        captured_lat,
+                        captured_lon,
+                    )
+
+                    quality_future = executor.submit(
+                        request_image_quality,
+                        image_bytes,
+                    )
+
+                    data = habitat_future.result()
+                    quality_data = quality_future.result()
+
+        st.session_state["quality_data"] = quality_data
 
         cache_prediction_state(
             image_id=image_id,
@@ -933,6 +1002,7 @@ def render_cached_results():
     prediction_lon = st.session_state.get("prediction_lon")
     prediction_accuracy = st.session_state.get("prediction_accuracy")
     source_caption = st.session_state.get("prediction_source_caption", "Habitat image")
+    quality_data = st.session_state.get("quality_data")
 
     if not data or not image_id or not upload_name or not cached_bytes:
         return
@@ -945,6 +1015,7 @@ def render_cached_results():
         render_predictions_panel(
             predictions,
             data["inference_time_ms"],
+            quality_data=quality_data,
             image_bytes=cached_bytes,
             image_caption=source_caption,
             ukhab_nodes=ukhab_nodes,
