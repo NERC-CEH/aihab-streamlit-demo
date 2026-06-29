@@ -36,7 +36,7 @@ def get_quality_client():
     return Client(
         "https://aihab-uk-habitat-image-quality.hf.space/"
     )
-quality_client = get_quality_client()
+
 
 headers = {
     "Authorization": f"Bearer {api_key}",
@@ -570,7 +570,7 @@ def request_image_quality(image_bytes):
         ) as tmp:
             tmp.write(image_bytes)
             tmp_path = tmp.name
-
+        quality_client = get_quality_client()
         result = quality_client.predict(
             image=handle_file(tmp_path),
             api_name="/assess_image"
